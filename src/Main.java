@@ -1,4 +1,9 @@
-import utils.*;
+import urb.URBNode;
+import utils.application.Block;
+import utils.application.Message;
+import utils.application.MessageType;
+import utils.communication.Address;
+import utils.communication.PeerInfo;
 
 void main() throws IOException, InterruptedException {
     PeerInfo p1 = new PeerInfo(1, new Address("127.0.0.1", 12345));
@@ -15,4 +20,6 @@ void main() throws IOException, InterruptedException {
     Message dummy = new Message(MessageType.PROPOSE, new Block(null, 1, 2, null), 1);
 
     node1.broadcastFromLocal(dummy);
+    Thread.sleep(1000);
+    System.exit(0); // for now exits just to force every thread to stop
 }
