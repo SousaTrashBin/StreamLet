@@ -13,200 +13,194 @@ import java.nio.channels.SocketChannel;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public class P2PNode implements Runnable, AutoCloseable {
-    private final PeerInfo myPeerInfo;
-    private final CountDownLatch connectionBarrier;
-    private final Map<Integer, PeerInfo> idsToOtherPeersInfo;
-    private ServerSocketChannel myServerSocketChannel;
-    private final ConcurrentLinkedQueue<MessageWithReceiver> writeQueue;
-    private final ConcurrentLinkedQueue<Message> readQueue;
-    private final Selector selector;
-    private final Map<Integer, SocketChannel> connections = new ConcurrentHashMap<>();
+    private final PeerInfo localPeerInfo;
+    private final CountDownLatch allPeersConnectedLatch;
+    private final Map<Integer, PeerInfo> peerInfoById;
+    private final ConcurrentLinkedQueue<MessageWithReceiver> outgoingMessageQueue = new ConcurrentLinkedQueue<>();
+    private final BlockingQueue<Message> incomingMessageQueue = new LinkedBlockingQueue<>();
+    private final Selector ioSelector = Selector.open();
+    private final Map<Integer, SocketChannel> peerConnections = new ConcurrentHashMap<>();
+    private ServerSocketChannel serverChannel;
 
-    public P2PNode(PeerInfo myPeerInfo,
-                   List<PeerInfo> otherPeersInfo,
-                   CountDownLatch connectionBarrier) throws IOException {
-        this(myPeerInfo, otherPeersInfo, connectionBarrier,
-                new ConcurrentLinkedQueue<>(), new ConcurrentLinkedQueue<>(), Selector.open());
+    public P2PNode(PeerInfo localPeerInfo,
+                   List<PeerInfo> remotePeersInfo) throws IOException {
+        this.localPeerInfo = localPeerInfo;
+        this.peerInfoById = remotePeersInfo.stream()
+                .collect(Collectors.toMap(PeerInfo::id, Function.identity()));
+        this.allPeersConnectedLatch = new CountDownLatch(peerInfoById.size());
+        initializeServerSocket();
     }
 
-    public P2PNode(PeerInfo myPeerInfo,
-                   List<PeerInfo> otherPeersInfo,
-                   CountDownLatch connectionBarrier,
-                   ConcurrentLinkedQueue<MessageWithReceiver> writeQueue,
-                   ConcurrentLinkedQueue<Message> readQueue) throws IOException {
-        this(myPeerInfo, otherPeersInfo, connectionBarrier, writeQueue, readQueue, Selector.open());
+    private void initializeServerSocket() throws IOException {
+        serverChannel = ServerSocketChannel.open();
+        serverChannel.configureBlocking(false);
+        serverChannel.bind(new InetSocketAddress(localPeerInfo.address().port()));
+        serverChannel.register(ioSelector, SelectionKey.OP_ACCEPT);
     }
 
-    public P2PNode(PeerInfo myPeerInfo,
-                   List<PeerInfo> otherPeersInfo,
-                   CountDownLatch connectionBarrier,
-                   ConcurrentLinkedQueue<MessageWithReceiver> writeQueue,
-                   ConcurrentLinkedQueue<Message> readQueue,
-                   Selector selector) throws IOException {
-        this.myPeerInfo = myPeerInfo;
-        this.idsToOtherPeersInfo = otherPeersInfo.stream().collect(Collectors.toMap(PeerInfo::id, Function.identity()));
-        this.connectionBarrier = connectionBarrier;
-        this.writeQueue = writeQueue;
-        this.readQueue = readQueue;
-        this.selector = selector;
-        startConnection();
-    }
+    private void attemptConnectionToPeer(PeerInfo remotePeer) throws IOException {
+        if (peerConnections.containsKey(remotePeer.id())) return;
+        if (localPeerInfo.id() < remotePeer.id()) return;
 
-    private void startConnection() throws IOException {
-        myServerSocketChannel = ServerSocketChannel.open();
-        myServerSocketChannel.configureBlocking(false);
-        myServerSocketChannel.bind(new InetSocketAddress(myPeerInfo.address().port()));
-        myServerSocketChannel.register(selector, SelectionKey.OP_ACCEPT);
-    }
-
-    private void tryToConnect(PeerInfo otherPeerInfo) throws IOException {
-        if (connections.containsKey(otherPeerInfo.id())) return;
-        if (myPeerInfo.id() < otherPeerInfo.id()) return;
-
-        SocketChannel socketChannel = SocketChannel.open();
-        socketChannel.configureBlocking(false);
-        socketChannel.connect(new InetSocketAddress(otherPeerInfo.address().ip(), otherPeerInfo.address().port()));
-        socketChannel.register(selector, SelectionKey.OP_CONNECT, otherPeerInfo);
-        System.out.println(myPeerInfo.id() + " initiating connection to: " + otherPeerInfo.id());
+        SocketChannel clientChannel = SocketChannel.open();
+        clientChannel.configureBlocking(false);
+        clientChannel.connect(new InetSocketAddress(remotePeer.address().ip(), remotePeer.address().port()));
+        clientChannel.register(ioSelector, SelectionKey.OP_CONNECT, remotePeer);
+        System.out.println(localPeerInfo.id() + " initiating connection to: " + remotePeer.id());
     }
 
     @Override
     public void run() {
         try {
-            runAux();
+            runEventLoop();
         } catch (IOException | ClassNotFoundException e) {
             e.printStackTrace();
         }
     }
 
-    private void runAux() throws IOException, ClassNotFoundException {
-        for (PeerInfo otherPeerInfo : idsToOtherPeersInfo.values()) {
-            tryToConnect(otherPeerInfo);
+    private void runEventLoop() throws IOException, ClassNotFoundException {
+        for (PeerInfo remotePeer : peerInfoById.values()) {
+            attemptConnectionToPeer(remotePeer);
         }
 
         while (true) {
-            selector.select();
-            sendPendingMessages();
+            ioSelector.select(100);
+            processOutgoingMessages();
 
-            for (SelectionKey key : selector.selectedKeys()) {
+            for (SelectionKey key : ioSelector.selectedKeys()) {
                 switch (KeyType.fromSelectionKey(key)) {
-                    case CONNECT -> handleConnect(key);
-                    case ACCEPT -> handleAccept(key);
-                    case READ -> handleRead(key);
+                    case CONNECT -> handleConnectComplete(key);
+                    case ACCEPT -> handleIncomingConnection(key);
+                    case READ -> handleIncomingMessage(key);
                 }
             }
 
-            selector.selectedKeys().clear();
+            ioSelector.selectedKeys().clear();
         }
     }
 
-    private void handleConnect(SelectionKey key) throws IOException {
-        SocketChannel channel = (SocketChannel) key.channel();
-        PeerInfo otherPeer = (PeerInfo) key.attachment();
+    private void handleConnectComplete(SelectionKey key) throws IOException {
+        SocketChannel clientChannel = (SocketChannel) key.channel();
+        PeerInfo remotePeer = (PeerInfo) key.attachment();
 
-        if (!channel.finishConnect()) {
+        if (!clientChannel.finishConnect()) {
             return;
         }
 
-        ByteBuffer idBuffer = ByteBuffer.allocate(4).putInt(myPeerInfo.id());
+        ByteBuffer idBuffer = ByteBuffer.allocate(4).putInt(localPeerInfo.id());
         idBuffer.flip();
-        channel.write(idBuffer);
+        clientChannel.write(idBuffer);
 
-        connections.put(otherPeer.id(), channel);
-        connectionBarrier.countDown();
-        System.out.println(myPeerInfo.id() + " connected to peer " + otherPeer.id());
-        channel.register(selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE);
+        peerConnections.put(remotePeer.id(), clientChannel);
+        allPeersConnectedLatch.countDown();
+        System.out.println(localPeerInfo.id() + " connected to peer " + remotePeer.id());
+        clientChannel.register(ioSelector, SelectionKey.OP_READ | SelectionKey.OP_WRITE);
     }
 
-    private void handleAccept(SelectionKey key) throws IOException {
-        SocketChannel clientChannel = ((ServerSocketChannel) key.channel()).accept();
-        clientChannel.configureBlocking(false);
+    private void handleIncomingConnection(SelectionKey key) throws IOException {
+        SocketChannel incomingChannel = ((ServerSocketChannel) key.channel()).accept();
+        incomingChannel.configureBlocking(false);
 
         ByteBuffer idBuffer = ByteBuffer.allocate(4);
         while (idBuffer.hasRemaining()) {
-            clientChannel.read(idBuffer);
+            incomingChannel.read(idBuffer);
         }
         idBuffer.flip();
-        int peerId = idBuffer.getInt();
+        int remotePeerId = idBuffer.getInt();
 
-        if (connections.containsKey(peerId)) {
-            clientChannel.close();
+        if (peerConnections.containsKey(remotePeerId)) {
+            incomingChannel.close();
             return;
         }
 
-        connections.put(peerId, clientChannel);
-        connectionBarrier.countDown();
-        System.out.println(myPeerInfo.id() + " accepted connection from peer " + peerId);
-        clientChannel.register(selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE);
-
+        peerConnections.put(remotePeerId, incomingChannel);
+        allPeersConnectedLatch.countDown();
+        System.out.println(localPeerInfo.id() + " accepted connection from peer " + remotePeerId);
+        incomingChannel.register(ioSelector, SelectionKey.OP_READ | SelectionKey.OP_WRITE);
     }
 
-    private void handleRead(SelectionKey key) throws IOException, ClassNotFoundException {
+    private void handleIncomingMessage(SelectionKey key) throws IOException, ClassNotFoundException {
         SocketChannel channel = (SocketChannel) key.channel();
-        Message message = readMessage(channel);
-        readQueue.add(message);
-        System.out.println(myPeerInfo.id() + " received message: " + message);
+        Message message = readMessageFromChannel(channel);
+        incomingMessageQueue.add(message);
+        System.out.println(localPeerInfo.id() + " received message: " + message);
     }
 
-    private Message readMessage(SocketChannel channel) throws IOException, ClassNotFoundException {
+    private Message readMessageFromChannel(SocketChannel channel) throws IOException, ClassNotFoundException {
         ByteBuffer lengthBuffer = ByteBuffer.allocate(4);
         while (lengthBuffer.hasRemaining()) {
             channel.read(lengthBuffer);
         }
         lengthBuffer.flip();
-        int length = lengthBuffer.getInt();
+        int messageLength = lengthBuffer.getInt();
 
-        ByteBuffer dataBuffer = ByteBuffer.allocate(length);
-        while (dataBuffer.hasRemaining()) {
-            channel.read(dataBuffer);
+        ByteBuffer messageBuffer = ByteBuffer.allocate(messageLength);
+        while (messageBuffer.hasRemaining()) {
+            channel.read(messageBuffer);
         }
-        dataBuffer.flip();
-        return Message.fromBytes(dataBuffer.array());
+        messageBuffer.flip();
+        return Message.fromBytes(messageBuffer.array());
     }
 
-    private void sendPendingMessages() throws IOException {
-        MessageWithReceiver msg;
-        while ((msg = writeQueue.poll()) != null) {
-            sendMessage(msg.receiverId(), msg.message());
+    void enqueueOutgoingMessage(MessageWithReceiver messageWithReceiver) {
+        outgoingMessageQueue.add(messageWithReceiver);
+        ioSelector.wakeup();
+    }
+
+    public Message receiveMessage() throws InterruptedException {
+        return incomingMessageQueue.take();
+    }
+
+    public void enqueueIncomingMessage(Message message) {
+        incomingMessageQueue.add(message);
+    }
+
+    public void waitForAllPeersConnected() throws InterruptedException {
+        allPeersConnectedLatch.await();
+    }
+
+    private void processOutgoingMessages() throws IOException {
+        MessageWithReceiver messageWithReceiver;
+        while ((messageWithReceiver = outgoingMessageQueue.poll()) != null) {
+            sendMessageToPeer(messageWithReceiver.receiverId(), messageWithReceiver.message());
         }
     }
 
-    private void sendMessage(Integer receiverId, Message message) throws IOException {
-        if (Objects.equals(receiverId, myPeerInfo.id())) {
+    private void sendMessageToPeer(Integer receiverId, Message message) throws IOException {
+        if (Objects.equals(receiverId, localPeerInfo.id())) {
             System.out.println("Can't send message to self");
+            return;
         }
-        SocketChannel channel = connections.get(receiverId);
-        if (channel == null || !channel.isConnected()) {
+        SocketChannel peerChannel = peerConnections.get(receiverId);
+        if (peerChannel == null || !peerChannel.isConnected()) {
             System.out.println("Can't send, no connection to " + receiverId);
             return;
         }
 
-        byte[] data = message.toBytes();
-        ByteBuffer buffer = ByteBuffer.allocate(4 + data.length);
-        buffer.putInt(data.length);
-        buffer.put(data);
-        buffer.flip();
+        byte[] messageBytes = message.toBytes();
+        ByteBuffer sendBuffer = ByteBuffer.allocate(4 + messageBytes.length);
+        sendBuffer.putInt(messageBytes.length);
+        sendBuffer.put(messageBytes);
+        sendBuffer.flip();
 
-        while (buffer.hasRemaining()) {
-            channel.write(buffer);
+        while (sendBuffer.hasRemaining()) {
+            peerChannel.write(sendBuffer);
         }
     }
 
     @Override
     public void close() {
         try {
-            myServerSocketChannel.close();
-            for (SocketChannel channel : connections.values()) {
+            serverChannel.close();
+            for (SocketChannel channel : peerConnections.values()) {
                 channel.close();
             }
-            selector.close();
+            ioSelector.close();
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
