@@ -1,14 +1,15 @@
 import urb.URBNode;
+import utils.ConfigParser;
 import utils.application.Block;
 import utils.application.Message;
 import utils.application.MessageType;
-import utils.communication.Address;
 import utils.communication.PeerInfo;
 
 void main() throws IOException, InterruptedException {
-    PeerInfo p1 = new PeerInfo(1, new Address("127.0.0.1", 12345));
-    PeerInfo p2 = new PeerInfo(2, new Address("127.0.0.1", 12346));
-    PeerInfo p3 = new PeerInfo(3, new Address("127.0.0.1", 12347));
+    List<PeerInfo> peerInfos = ConfigParser.parsePeers();
+    PeerInfo p1 = peerInfos.getFirst();
+    PeerInfo p2 = peerInfos.get(1);
+    PeerInfo p3 = peerInfos.get(2);
 
     URBNode node1 = new URBNode(p1, List.of(p2, p3));
     URBNode node2 = new URBNode(p2, List.of(p1, p3));
