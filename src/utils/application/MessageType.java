@@ -1,4 +1,4 @@
-package utils;
+package utils.application;
 
 public enum MessageType {
     PROPOSE,

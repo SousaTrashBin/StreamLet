@@ -1,6 +1,9 @@
-import utils.Message;
-import utils.MessageWithReceiver;
-import utils.PeerInfo;
+package urb;
+
+import network.P2PNode;
+import utils.application.Message;
+import utils.communication.MessageWithReceiver;
+import utils.communication.PeerInfo;
 
 import java.io.IOException;
 import java.util.HashSet;
@@ -24,7 +27,7 @@ public class URBNode {
 
     public void startURBNode() throws InterruptedException {
         networkLayer.waitForAllPeersConnected();
-        System.out.printf("P2PNode %d is ready\n", localPeerId);
+        System.out.printf("network.P2PNode %d is ready\n", localPeerId);
         new Thread(this::processIncomingMessages).start();
     }
 

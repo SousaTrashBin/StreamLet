@@ -1,7 +1,9 @@
-import utils.KeyType;
-import utils.Message;
-import utils.MessageWithReceiver;
-import utils.PeerInfo;
+package network;
+
+import utils.application.Message;
+import utils.communication.KeyType;
+import utils.communication.MessageWithReceiver;
+import utils.communication.PeerInfo;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -147,7 +149,7 @@ public class P2PNode implements Runnable, AutoCloseable {
         return Message.fromBytes(messageBuffer.array());
     }
 
-    void enqueueOutgoingMessage(MessageWithReceiver messageWithReceiver) {
+    public void enqueueOutgoingMessage(MessageWithReceiver messageWithReceiver) {
         outgoingMessageQueue.add(messageWithReceiver);
         ioSelector.wakeup();
     }

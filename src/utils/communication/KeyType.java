@@ -1,4 +1,4 @@
-package utils;
+package utils.communication;
 
 import java.nio.channels.SelectionKey;
 
