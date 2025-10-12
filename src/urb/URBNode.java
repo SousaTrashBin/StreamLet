@@ -16,13 +16,16 @@ public class URBNode {
     private final List<Integer> remotePeerIds;
     private final P2PNode networkLayer;
     private final int localPeerId;
+    private final URBCallback callback;
 
     public URBNode(PeerInfo localPeerInfo,
-                   List<PeerInfo> remotePeersInfo) throws IOException {
+                   List<PeerInfo> remotePeersInfo,
+                   URBCallback callback) throws IOException {
         localPeerId = localPeerInfo.id();
         remotePeerIds = remotePeersInfo.stream().map(PeerInfo::id).toList();
         networkLayer = new P2PNode(localPeerInfo, remotePeersInfo);
         new Thread(networkLayer).start();
+        this.callback = callback;
     }
 
     public void startURBNode() throws InterruptedException {
@@ -57,8 +60,7 @@ public class URBNode {
     }
 
     private void deliverToApplication(Message message) {
-        System.out.printf("Peer %d delivered message from %d: %s%n",
-                localPeerId, message.sender(), message);
+        callback.onDelivery(message);
     }
 
     public void broadcastFromLocal(Message message) {

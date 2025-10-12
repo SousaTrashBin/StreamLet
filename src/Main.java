@@ -11,9 +11,9 @@ void main() throws IOException, InterruptedException {
     PeerInfo p2 = peerInfos.get(1);
     PeerInfo p3 = peerInfos.get(2);
 
-    URBNode node1 = new URBNode(p1, List.of(p2, p3));
-    URBNode node2 = new URBNode(p2, List.of(p1, p3));
-    URBNode node3 = new URBNode(p3, List.of(p1, p2));
+    URBNode node1 = new URBNode(p1, List.of(p2, p3), message -> System.out.println("Peer 1 delivered to the application " + message));
+    URBNode node2 = new URBNode(p2, List.of(p1, p3), message -> System.out.println("Peer 2 delivered to the application " + message));
+    URBNode node3 = new URBNode(p3, List.of(p1, p2), message -> System.out.println("Peer 1 delivered to the application " + message));
     node1.startURBNode();
     node2.startURBNode();
     node3.startURBNode();
