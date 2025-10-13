@@ -2,6 +2,7 @@ package urb;
 
 import network.P2PNode;
 import utils.application.Message;
+import utils.application.MessageType;
 import utils.communication.MessageWithReceiver;
 import utils.communication.PeerInfo;
 
@@ -30,7 +31,7 @@ public class URBNode {
 
     public void startURBNode() throws InterruptedException {
         networkLayer.waitForAllPeersConnected();
-        System.out.printf("network.P2PNode %d is ready\n", localPeerId);
+        System.out.printf("P2PNode %d is ready\n", localPeerId);
         new Thread(this::processIncomingMessages).start();
     }
 
@@ -54,10 +55,28 @@ public class URBNode {
     }
 
     private void deliverMessage(Message message) {
-        if (!deliveredMessages.add(message)) return;
-        broadcastToPeers(message);
-        deliverToApplication(message);
+        switch (message.type()) {
+            case ECHO -> {
+                if (message.content() instanceof Message contentMessage
+                        && deliveredMessages.add(contentMessage)) {
+
+                    deliveredMessages.add(message);
+                    deliverToApplication(contentMessage);
+                    System.out.println(localPeerId + " delivered message " + contentMessage);
+                }
+            }
+            case PROPOSE, VOTE -> {
+                if (!deliveredMessages.add(message)) {
+                    return;
+                }
+                Message echoMessage = new Message(MessageType.ECHO, message, localPeerId);
+                broadcastToPeers(echoMessage);
+                deliverToApplication(message);
+                System.out.println(localPeerId + " delivered message " + message);
+            }
+        }
     }
+
 
     private void deliverToApplication(Message message) {
         callback.onDelivery(message);
@@ -65,5 +84,6 @@ public class URBNode {
 
     public void broadcastFromLocal(Message message) {
         networkLayer.enqueueIncomingMessage(message);
+        broadcastToPeers(message);
     }
 }
