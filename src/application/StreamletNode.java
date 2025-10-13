@@ -100,7 +100,9 @@ public class StreamletNode {
                 Block votedBlock = (Block) message.content();
                 votedBlocks.putIfAbsent(votedBlock, new HashSet<>());
 
-                votedBlocks.get(votedBlock).add(message.sender());
+                if (random.nextDouble(1) > 0.5) {
+                    votedBlocks.get(votedBlock).add(message.sender());
+                }
 
                 if (!blockchainManager.isNotarized(votedBlock) &&
                         votedBlocks.get(votedBlock).size() > numberOfDistinctNodes / 2) {
