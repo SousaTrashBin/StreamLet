@@ -47,7 +47,7 @@ public class P2PNode implements Runnable, AutoCloseable {
 
     private void attemptConnectionToPeer(PeerInfo remotePeer) throws IOException {
         if (peerConnections.containsKey(remotePeer.id())) return;
-        if (localPeerInfo.id() < remotePeer.id()) return;
+        if (localPeerInfo.id() <= remotePeer.id()) return;
 
         SocketChannel clientChannel = SocketChannel.open();
         clientChannel.configureBlocking(false);
@@ -130,7 +130,6 @@ public class P2PNode implements Runnable, AutoCloseable {
         SocketChannel channel = (SocketChannel) key.channel();
         Message message = readMessageFromChannel(channel);
         incomingMessageQueue.add(message);
-        System.out.println(localPeerInfo.id() + " received message: " + message);
     }
 
     private Message readMessageFromChannel(SocketChannel channel) throws IOException, ClassNotFoundException {
