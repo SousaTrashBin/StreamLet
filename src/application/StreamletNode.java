@@ -10,9 +10,7 @@ import utils.communication.PeerInfo;
 import java.io.IOException;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class StreamletNode {
@@ -25,38 +23,79 @@ public class StreamletNode {
     private final Random random = new Random(1L);
     private final BlockchainManager blockchainManager;
     private final Map<Block, Set<Integer>> votedBlocks = new HashMap<>();
+    private final static int CONFUSION_START = 10;
+    private final static int CONFUSION_DURATION = 5;
+    private final BlockingQueue<Message> derivableQueue = new LinkedBlockingQueue<>();
 
     public StreamletNode(PeerInfo localPeerInfo, List<PeerInfo> remotePeersInfo, int deltaInSeconds)
-            throws IOException {
+            throws IOException, InterruptedException {
         localId = localPeerInfo.id();
         numberOfDistinctNodes = 1 + remotePeersInfo.size();
         this.deltaInSeconds = deltaInSeconds;
         transactionPoolSimulator = new TransactionPoolSimulator(numberOfDistinctNodes);
         blockchainManager = new BlockchainManager();
-        urbNode = new URBNode(localPeerInfo, remotePeersInfo, this::handleMessageDelivery);
+        urbNode = new URBNode(localPeerInfo, remotePeersInfo, derivableQueue::add);
     }
 
     public void startProtocol() throws InterruptedException {
-        urbNode.startURBNode();
+        launchConsumerThread();
+        launchUrbThread();
+
+        urbNode.waitForAllPeersToConnect();
 
         AtomicInteger currentEpoch = new AtomicInteger(1);
         long epochDurationInSeconds = 2L * deltaInSeconds;
 
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+
+        //in order to test if it was successful maybe it will be important to add a max number of runs
+        //before logging what happened (at least the whole chain that was validated)
         scheduler.scheduleAtFixedRate(() -> {
             int currentEpochValue = currentEpoch.addAndGet(1);
             int currentLeaderId = getLeaderId(currentEpochValue);
             System.out.printf("Epoch advanced to %d, current leader is %d%n", currentEpochValue, currentLeaderId);
 
-                if (localId == currentLeaderId) {
-                    try {
-                        proposeNewBlock(currentEpochValue);
-                    } catch (NoSuchAlgorithmException e) {
-                        e.printStackTrace();
-                    }
+            if (localId == currentLeaderId) {
+                try {
+                    proposeNewBlock(currentEpochValue);
+                } catch (NoSuchAlgorithmException e) {
+                    e.printStackTrace();
                 }
+            }
+
+            if (currentEpochValue % 5 == 0) {
+                blockchainManager.printLinearBlockchain();
+            }
         }, epochDurationInSeconds, epochDurationInSeconds, TimeUnit.SECONDS);
-        }
+    }
+
+    private void launchUrbThread() {
+        Thread urbThread = new Thread(() -> {
+            try {
+                urbNode.startURBNode();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        });
+        urbThread.setDaemon(true);
+        urbThread.start();
+    }
+
+    private void launchConsumerThread() {
+        Thread consumerThread = new Thread(() -> {
+            try {
+                while (true) {
+                    Message message = derivableQueue.take();
+                    handleMessageDelivery(message);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                e.printStackTrace();
+            }
+        });
+        consumerThread.setDaemon(true);
+        consumerThread.start();
+    }
 
     private void proposeNewBlock(int currentEpoch) throws NoSuchAlgorithmException {
         int transactionCount = random.nextInt(2, 6);
@@ -70,7 +109,7 @@ public class StreamletNode {
         Block newBlock = new Block(
                 parent.hash(),
                 currentEpoch,
-                blockchainManager.getChainSize() + 1,
+                blockchainManager.getChainLength() + 1,
                 transactions
         );
 
@@ -85,7 +124,7 @@ public class StreamletNode {
                 votedBlocks.putIfAbsent(proposedBlock, new HashSet<>());
 
                 if (votedBlocks.get(proposedBlock).contains(localId) ||
-                        proposedBlock.length() <= blockchainManager.getChainSize()) {
+                        proposedBlock.length() <= blockchainManager.getChainLength()) {
                     return;
                 }
 
@@ -98,16 +137,19 @@ public class StreamletNode {
 
             case VOTE -> {
                 Block votedBlock = (Block) message.content();
-                votedBlocks.putIfAbsent(votedBlock, new HashSet<>());
 
-                if (random.nextDouble(1) > 0.5) {
-                    votedBlocks.get(votedBlock).add(message.sender());
+                if (votedBlock.length() < blockchainManager.getChainLength()) {
+                    System.out.printf("Vote ignored, Block %s does not extend the current chain (length = %d)%n",
+                            Arrays.toString(votedBlock.hash()), votedBlock.length());
+                    return;
                 }
+
+                votedBlocks.putIfAbsent(votedBlock, new HashSet<>());
+                votedBlocks.get(votedBlock).add(message.sender());
 
                 if (!blockchainManager.isNotarized(votedBlock) &&
                         votedBlocks.get(votedBlock).size() > numberOfDistinctNodes / 2) {
                     blockchainManager.notarizeBlock(votedBlock);
-                    // maybe the block could be deleted once its voted
                     System.out.println("Block " + Arrays.toString(votedBlock.hash()) + " has been notarized");
                 }
             }
@@ -115,7 +157,11 @@ public class StreamletNode {
     }
 
     private int getLeaderId(int currentEpoch) {
-        Random epochRandom = new Random(1L + currentEpoch);
-        return epochRandom.nextInt(numberOfDistinctNodes);
+        if (currentEpoch < CONFUSION_START
+                || currentEpoch >= CONFUSION_START + CONFUSION_DURATION - 1) {
+            return random.nextInt(numberOfDistinctNodes);
+        }
+        return currentEpoch % numberOfDistinctNodes;
     }
+
 }

@@ -21,7 +21,7 @@ public class URBNode {
 
     public URBNode(PeerInfo localPeerInfo,
                    List<PeerInfo> remotePeersInfo,
-                   URBCallback callback) throws IOException {
+                   URBCallback callback) throws IOException, InterruptedException {
         localPeerId = localPeerInfo.id();
         remotePeerIds = remotePeersInfo.stream().map(PeerInfo::id).toList();
         networkLayer = new P2PNode(localPeerInfo, remotePeersInfo);
@@ -29,8 +29,12 @@ public class URBNode {
         this.callback = callback;
     }
 
-    public void startURBNode() throws InterruptedException {
+    public void waitForAllPeersToConnect() throws InterruptedException {
         networkLayer.waitForAllPeersConnected();
+    }
+
+    public void startURBNode() throws InterruptedException {
+        waitForAllPeersToConnect();
         System.out.printf("P2PNode %d is ready\n", localPeerId);
         new Thread(this::processIncomingMessages).start();
     }

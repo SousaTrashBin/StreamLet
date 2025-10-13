@@ -3,7 +3,7 @@ import utils.ConfigParser;
 import utils.communication.PeerInfo;
 
 
-void main(String[] args) throws IOException, InterruptedException, NoSuchAlgorithmException {
+void main(String[] args) throws IOException, InterruptedException {
     if (args.length != 1) {
         System.out.println("Usage: Streamlet <nodeId>");
         return;
