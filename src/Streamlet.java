@@ -20,4 +20,5 @@ void main(String[] args) throws IOException, InterruptedException, NoSuchAlgorit
             .toList();
 
     StreamletNode node = new StreamletNode(localPeer, remotePeers, 2);
+    node.startProtocol();
 }

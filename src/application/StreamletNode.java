@@ -10,6 +10,10 @@ import utils.communication.PeerInfo;
 import java.io.IOException;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class StreamletNode {
 
@@ -23,38 +27,36 @@ public class StreamletNode {
     private final Map<Block, Set<Integer>> votedBlocks = new HashMap<>();
 
     public StreamletNode(PeerInfo localPeerInfo, List<PeerInfo> remotePeersInfo, int deltaInSeconds)
-            throws IOException, InterruptedException, NoSuchAlgorithmException {
+            throws IOException {
         localId = localPeerInfo.id();
         numberOfDistinctNodes = 1 + remotePeersInfo.size();
         this.deltaInSeconds = deltaInSeconds;
         transactionPoolSimulator = new TransactionPoolSimulator(numberOfDistinctNodes);
         blockchainManager = new BlockchainManager();
         urbNode = new URBNode(localPeerInfo, remotePeersInfo, this::handleMessageDelivery);
-        urbNode.startURBNode();
-        startProtocol();
     }
 
-    private void startProtocol() throws InterruptedException, NoSuchAlgorithmException {
-        int currentEpoch = 1;
-        long lastEpochStartTimeMs = System.currentTimeMillis();
-        long epochDurationMs = 2L * deltaInSeconds * 1000L;
+    public void startProtocol() throws InterruptedException {
+        urbNode.startURBNode();
 
-        while (true) {
-            long now = System.currentTimeMillis();
-            if (now - lastEpochStartTimeMs >= epochDurationMs) {
-                currentEpoch++;
-                lastEpochStartTimeMs = now;
-                int currentLeaderId = getLeaderId(currentEpoch);
-                System.out.printf("Epoch advanced to %d, current leader is %d%n", currentEpoch, currentLeaderId);
+        AtomicInteger currentEpoch = new AtomicInteger(1);
+        long epochDurationInSeconds = 2L * deltaInSeconds;
+
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        scheduler.scheduleAtFixedRate(() -> {
+            int currentEpochValue = currentEpoch.addAndGet(1);
+            int currentLeaderId = getLeaderId(currentEpochValue);
+            System.out.printf("Epoch advanced to %d, current leader is %d%n", currentEpochValue, currentLeaderId);
 
                 if (localId == currentLeaderId) {
-                    proposeNewBlock(currentEpoch);
+                    try {
+                        proposeNewBlock(currentEpochValue);
+                    } catch (NoSuchAlgorithmException e) {
+                        e.printStackTrace();
+                    }
                 }
-            }
-
-            Thread.sleep(100);
+        }, epochDurationInSeconds, epochDurationInSeconds, TimeUnit.SECONDS);
         }
-    }
 
     private void proposeNewBlock(int currentEpoch) throws NoSuchAlgorithmException {
         int transactionCount = random.nextInt(2, 6);
