@@ -15,7 +15,7 @@ public class ConfigParser {
     public static List<PeerInfo> parsePeers() throws IOException {
         var lines = Files.readAllLines(Paths.get(CONFIG_FILE));
         return IntStream.range(0, lines.size())
-                .mapToObj(index -> new PeerInfo(index + 1, Address.fromString(lines.get(index))))
+                .mapToObj(index -> new PeerInfo(index, Address.fromString(lines.get(index))))
                 .toList();
     }
 
