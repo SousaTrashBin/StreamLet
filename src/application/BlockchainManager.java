@@ -48,7 +48,12 @@ public class BlockchainManager {
         if (index < 2) return;
 
         if (blockChain.subList(index - 2, index + 1).stream().allMatch(this::isNotarized)) {
-            finalizedBlocks.add(blockChain.get(index - 1));
+            finalizedBlocks.addAll(blockChain.subList(index - 2, index));
+            String logString = " Finalized blocks were added size = %d%n";
+            String separator = "=".repeat(logString.length() - 1);
+            System.out.println(separator);
+            System.out.printf(logString, finalizedBlocks.size());
+            System.out.println(separator);
         }
     }
 

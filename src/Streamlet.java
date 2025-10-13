@@ -12,7 +12,6 @@ void main(String[] args) throws IOException, InterruptedException, NoSuchAlgorit
     int nodeId = Integer.parseInt(args[0]);
 
     List<PeerInfo> peerInfos = ConfigParser.parsePeers();
-    System.out.println(peerInfos);
     PeerInfo localPeer = peerInfos.get(nodeId);
 
     List<PeerInfo> remotePeers = peerInfos.stream()
