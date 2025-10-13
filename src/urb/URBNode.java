@@ -61,8 +61,8 @@ public class URBNode {
                         && deliveredMessages.add(contentMessage)) {
 
                     deliveredMessages.add(message);
+                    System.out.println(localPeerId + " delivering message " + contentMessage);
                     deliverToApplication(contentMessage);
-                    System.out.println(localPeerId + " delivered message " + contentMessage);
                 }
             }
             case PROPOSE, VOTE -> {
@@ -84,6 +84,5 @@ public class URBNode {
 
     public void broadcastFromLocal(Message message) {
         networkLayer.enqueueIncomingMessage(message);
-        broadcastToPeers(message);
     }
 }

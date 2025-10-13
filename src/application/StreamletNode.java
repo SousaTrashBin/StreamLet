@@ -36,7 +36,6 @@ public class StreamletNode {
 
     private void startProtocol() throws InterruptedException, NoSuchAlgorithmException {
         int currentEpoch = 1;
-        int leaderId = getLeaderId(currentEpoch);
         long lastEpochStartTimeMs = System.currentTimeMillis();
         long epochDurationMs = 2L * deltaInSeconds * 1000L;
 
@@ -45,10 +44,10 @@ public class StreamletNode {
             if (now - lastEpochStartTimeMs >= epochDurationMs) {
                 currentEpoch++;
                 lastEpochStartTimeMs = now;
-                leaderId = getLeaderId(currentEpoch);
-                System.out.printf("Epoch advanced to %d, current leader is %d%n", currentEpoch, leaderId);
+                int currentLeaderId = getLeaderId(currentEpoch);
+                System.out.printf("Epoch advanced to %d, current leader is %d%n", currentEpoch, currentLeaderId);
 
-                if (leaderId == localId) {
+                if (localId == currentLeaderId) {
                     proposeNewBlock(currentEpoch);
                 }
             }
@@ -69,7 +68,7 @@ public class StreamletNode {
         Block newBlock = new Block(
                 parent.hash(),
                 currentEpoch,
-                blockchainManager.getChainSize(),
+                blockchainManager.getChainSize() + 1,
                 transactions
         );
 
@@ -101,8 +100,11 @@ public class StreamletNode {
 
                 votedBlocks.get(votedBlock).add(message.sender());
 
-                if (votedBlocks.get(votedBlock).size() > numberOfDistinctNodes / 2) {
+                if (!blockchainManager.isNotarized(votedBlock) &&
+                        votedBlocks.get(votedBlock).size() > numberOfDistinctNodes / 2) {
                     blockchainManager.notarizeBlock(votedBlock);
+                    // maybe the block could be deleted once its voted
+                    System.out.println("Block " + Arrays.toString(votedBlock.hash()) + " has been notarized");
                 }
             }
         }
