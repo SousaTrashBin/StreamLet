@@ -29,8 +29,7 @@ public class P2PNode implements Runnable, AutoCloseable {
     private final Map<Integer, SocketChannel> peerConnections = new ConcurrentHashMap<>();
     private ServerSocketChannel serverChannel;
 
-    public P2PNode(PeerInfo localPeerInfo,
-                   List<PeerInfo> remotePeersInfo) throws IOException {
+    public P2PNode(PeerInfo localPeerInfo, List<PeerInfo> remotePeersInfo) throws IOException {
         this.localPeerInfo = localPeerInfo;
         this.peerInfoById = remotePeersInfo.stream()
                 .collect(Collectors.toMap(PeerInfo::id, Function.identity()));
@@ -46,14 +45,20 @@ public class P2PNode implements Runnable, AutoCloseable {
     }
 
     private void attemptConnectionToPeer(PeerInfo remotePeer) throws IOException {
-        if (peerConnections.containsKey(remotePeer.id())) return;
-        if (localPeerInfo.id() <= remotePeer.id()) return;
+        peerConnections.computeIfPresent(remotePeer.id(), (_, existing) -> {
+            try {
+                if (existing.isConnected() || existing.isConnectionPending()) return existing;
+                existing.close();
+            } catch (IOException ignored) {
+            }
+            return null;
+        });
 
         SocketChannel clientChannel = SocketChannel.open();
         clientChannel.configureBlocking(false);
         clientChannel.connect(new InetSocketAddress(remotePeer.address().ip(), remotePeer.address().port()));
         clientChannel.register(ioSelector, SelectionKey.OP_CONNECT, remotePeer);
-        System.out.println(localPeerInfo.id() + " initiating connection to: " + remotePeer.id());
+        peerConnections.put(remotePeer.id(), clientChannel); // should add channel as soon as it creates an attempt
     }
 
     @Override
@@ -66,23 +71,61 @@ public class P2PNode implements Runnable, AutoCloseable {
     }
 
     private void runEventLoop() throws IOException, ClassNotFoundException {
-        for (PeerInfo remotePeer : peerInfoById.values()) {
-            attemptConnectionToPeer(remotePeer);
-        }
-
         while (true) {
-            ioSelector.select(100);
+            attemptToConnectToPeers();
+            ioSelector.select(2000);
             processOutgoingMessages();
 
             for (SelectionKey key : ioSelector.selectedKeys()) {
-                switch (KeyType.fromSelectionKey(key)) {
-                    case CONNECT -> handleConnectComplete(key);
-                    case ACCEPT -> handleIncomingConnection(key);
-                    case READ -> handleIncomingMessage(key);
+                if (!key.isValid()) continue;
+                try {
+                    switch (KeyType.fromSelectionKey(key)) {
+                        case CONNECT -> handleConnectComplete(key);
+                        case ACCEPT -> handleIncomingConnection(key);
+                        case READ -> handleIncomingMessage(key);
+                    }
+                } catch (IOException e) {
+                    handleConnectionFailure(key, e);
                 }
             }
-
             ioSelector.selectedKeys().clear();
+        }
+    }
+
+    private void handleConnectionFailure(SelectionKey key, IOException e) {
+        SocketChannel channel = (SocketChannel) key.channel();
+        Integer peerId = findPeerIdByChannel(channel);
+        System.out.printf("Lost connection to peer %d", peerId);
+
+        if (peerId != null) {
+            peerConnections.remove(peerId);
+        }
+
+        try {
+            key.cancel();
+            channel.close();
+        } catch (IOException ex) {
+            ex.printStackTrace();
+        }
+    }
+
+    private Integer findPeerIdByChannel(SocketChannel channel) {
+        return peerConnections.entrySet().stream()
+                .filter(entry -> entry.getValue() == channel)
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private void attemptToConnectToPeers() {
+        for (PeerInfo remotePeer : peerInfoById.values()) {
+            SocketChannel channel = peerConnections.get(remotePeer.id());
+            if (channel == null || !channel.isOpen() || (!channel.isConnected() && !channel.isConnectionPending())) {
+                try {
+                    attemptConnectionToPeer(remotePeer);
+                } catch (IOException ignored) {
+                }
+            }
         }
     }
 
@@ -90,7 +133,15 @@ public class P2PNode implements Runnable, AutoCloseable {
         SocketChannel clientChannel = (SocketChannel) key.channel();
         PeerInfo remotePeer = (PeerInfo) key.attachment();
 
-        if (!clientChannel.finishConnect()) {
+        try {
+            clientChannel.finishConnect();
+        } catch (IOException e) {
+            key.cancel();
+            clientChannel.close();
+            var channel = peerConnections.remove(remotePeer.id());
+            if (channel != null) {
+                channel.close();
+            }
             return;
         }
 
@@ -110,14 +161,18 @@ public class P2PNode implements Runnable, AutoCloseable {
 
         ByteBuffer idBuffer = ByteBuffer.allocate(4);
         while (idBuffer.hasRemaining()) {
-            incomingChannel.read(idBuffer);
+            int read = incomingChannel.read(idBuffer);
+            if (read == -1) {
+                incomingChannel.close();
+                return;
+            }
         }
         idBuffer.flip();
         int remotePeerId = idBuffer.getInt();
 
-        if (peerConnections.containsKey(remotePeerId)) {
-            incomingChannel.close();
-            return;
+        SocketChannel existing = peerConnections.remove(remotePeerId);
+        if (existing != null && existing.isOpen()) {
+            existing.close();
         }
 
         peerConnections.put(remotePeerId, incomingChannel);
@@ -129,20 +184,28 @@ public class P2PNode implements Runnable, AutoCloseable {
     private void handleIncomingMessage(SelectionKey key) throws IOException, ClassNotFoundException {
         SocketChannel channel = (SocketChannel) key.channel();
         Message message = readMessageFromChannel(channel);
-        incomingMessageQueue.add(message);
+        if (message != null) { // safety check
+            incomingMessageQueue.add(message);
+        }
     }
 
     private Message readMessageFromChannel(SocketChannel channel) throws IOException, ClassNotFoundException {
         ByteBuffer lengthBuffer = ByteBuffer.allocate(4);
         while (lengthBuffer.hasRemaining()) {
-            channel.read(lengthBuffer);
+            int read = channel.read(lengthBuffer);
+            if (read == -1) {
+                throw new IOException("Connection closed");
+            }
         }
         lengthBuffer.flip();
         int messageLength = lengthBuffer.getInt();
 
         ByteBuffer messageBuffer = ByteBuffer.allocate(messageLength);
         while (messageBuffer.hasRemaining()) {
-            channel.read(messageBuffer);
+            int read = channel.read(messageBuffer);
+            if (read == -1) {
+                throw new IOException("Connection closed");
+            }
         }
         messageBuffer.flip();
         return Message.fromBytes(messageBuffer.array());
@@ -174,12 +237,10 @@ public class P2PNode implements Runnable, AutoCloseable {
 
     private void sendMessageToPeer(Integer receiverId, Message message) throws IOException {
         if (Objects.equals(receiverId, localPeerInfo.id())) {
-            System.out.println("Can't send message to self");
             return;
         }
         SocketChannel peerChannel = peerConnections.get(receiverId);
         if (peerChannel == null || !peerChannel.isConnected()) {
-            System.out.println("Can't send, no connection to " + receiverId);
             return;
         }
 
