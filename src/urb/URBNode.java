@@ -11,6 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
 
 public class URBNode {
     private final Set<Message> deliveredMessages = new HashSet<>();
@@ -18,15 +19,17 @@ public class URBNode {
     private final P2PNode networkLayer;
     private final int localPeerId;
     private final URBCallback callback;
+    private final ExecutorService executor;
 
     public URBNode(PeerInfo localPeerInfo,
                    List<PeerInfo> remotePeersInfo,
-                   URBCallback callback) throws IOException, InterruptedException {
+                   URBCallback callback, ExecutorService messageExecutor) throws IOException {
         localPeerId = localPeerInfo.id();
         remotePeerIds = remotePeersInfo.stream().map(PeerInfo::id).toList();
         networkLayer = new P2PNode(localPeerInfo, remotePeersInfo);
         new Thread(networkLayer).start();
         this.callback = callback;
+        executor = messageExecutor;
     }
 
     public void waitForAllPeersToConnect() throws InterruptedException {
@@ -36,7 +39,7 @@ public class URBNode {
     public void startURBNode() throws InterruptedException {
         waitForAllPeersToConnect();
         System.out.printf("P2PNode %d is ready\n", localPeerId);
-        new Thread(this::processIncomingMessages).start();
+        executor.submit(this::processIncomingMessages);
     }
 
     public void broadcastToPeers(Message message) {
@@ -61,11 +64,10 @@ public class URBNode {
     private void deliverMessage(Message message) {
         switch (message.type()) {
             case ECHO -> {
+                broadcastToPeers(message);
+                deliveredMessages.add(message);
                 if (message.content() instanceof Message contentMessage
                         && deliveredMessages.add(contentMessage)) {
-
-                    deliveredMessages.add(message);
-                    System.out.println(localPeerId + " delivering message " + contentMessage);
                     deliverToApplication(contentMessage);
                 }
             }
@@ -76,7 +78,6 @@ public class URBNode {
                 Message echoMessage = new Message(MessageType.ECHO, message, localPeerId);
                 broadcastToPeers(echoMessage);
                 deliverToApplication(message);
-                System.out.println(localPeerId + " delivered message " + message);
             }
         }
     }
