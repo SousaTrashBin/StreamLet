@@ -18,6 +18,6 @@ void main(String[] args) throws IOException, InterruptedException {
             .filter(p -> p.id() != nodeId)
             .toList();
 
-    StreamletNode node = new StreamletNode(localPeer, remotePeers, 2);
+    StreamletNode node = new StreamletNode(localPeer, remotePeers, 1);
     node.startProtocol();
 }

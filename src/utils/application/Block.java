@@ -34,16 +34,6 @@ public final class Block implements Content {
             buffer.putInt(epoch);
             buffer.putInt(length);
             sha1.update(buffer.array());
-
-            for (Transaction transaction : transactions) {
-                ByteBuffer transactionBuffer = ByteBuffer.allocate(20);
-                transactionBuffer.putInt(transaction.id());
-                transactionBuffer.putInt(transaction.sender());
-                transactionBuffer.putInt(transaction.receiver());
-                transactionBuffer.putDouble(transaction.amount());
-                sha1.update(transactionBuffer.array());
-            }
-
             return sha1.digest();
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException("SHA-1 not available", e);

@@ -23,18 +23,22 @@ public class StreamletNode {
     private final Random random = new Random(1L);
     private final BlockchainManager blockchainManager;
     private final Map<Block, Set<Integer>> votedBlocks = new HashMap<>();
-    private final static int CONFUSION_START = 10;
+    private final static int CONFUSION_START = 30;
     private final static int CONFUSION_DURATION = 5;
     private final BlockingQueue<Message> derivableQueue = new LinkedBlockingQueue<>();
+    private final AtomicInteger currentEpoch = new AtomicInteger(0);
+    private final ExecutorService messageExecutor = Executors.newFixedThreadPool(2);
+    private boolean hasSeenValidProposalFromLeader = false;
+    private int currentLeaderId = -1;
 
     public StreamletNode(PeerInfo localPeerInfo, List<PeerInfo> remotePeersInfo, int deltaInSeconds)
-            throws IOException, InterruptedException {
+            throws IOException {
         localId = localPeerInfo.id();
         numberOfDistinctNodes = 1 + remotePeersInfo.size();
         this.deltaInSeconds = deltaInSeconds;
         transactionPoolSimulator = new TransactionPoolSimulator(numberOfDistinctNodes);
         blockchainManager = new BlockchainManager();
-        urbNode = new URBNode(localPeerInfo, remotePeersInfo, derivableQueue::add);
+        urbNode = new URBNode(localPeerInfo, remotePeersInfo, derivableQueue::add, messageExecutor);
     }
 
     public void startProtocol() throws InterruptedException {
@@ -43,16 +47,13 @@ public class StreamletNode {
 
         urbNode.waitForAllPeersToConnect();
 
-        AtomicInteger currentEpoch = new AtomicInteger(1);
         long epochDurationInSeconds = 2L * deltaInSeconds;
 
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
-        //in order to test if it was successful maybe it will be important to add a max number of runs
-        //before logging what happened (at least the whole chain that was validated)
         scheduler.scheduleAtFixedRate(() -> {
             int currentEpochValue = currentEpoch.addAndGet(1);
-            int currentLeaderId = getLeaderId(currentEpochValue);
+            currentLeaderId = calculateLeaderId(currentEpochValue);
             System.out.printf("Epoch advanced to %d, current leader is %d%n", currentEpochValue, currentLeaderId);
 
             if (localId == currentLeaderId) {
@@ -66,6 +67,7 @@ public class StreamletNode {
             if (currentEpochValue % 5 == 0) {
                 blockchainManager.printLinearBlockchain();
             }
+            hasSeenValidProposalFromLeader = false;
         }, epochDurationInSeconds, epochDurationInSeconds, TimeUnit.SECONDS);
     }
 
@@ -82,10 +84,23 @@ public class StreamletNode {
     }
 
     private void launchConsumerThread() {
-        Thread consumerThread = new Thread(() -> {
+        messageExecutor.execute(() -> {
             try {
                 while (true) {
                     Message message = derivableQueue.take();
+                    int epoch = currentEpoch.get();
+
+                    if (epoch >= CONFUSION_START && epoch < CONFUSION_START + CONFUSION_DURATION + 1) {
+                        System.out.printf("Pausing message processing during confusion %d%n", epoch);
+
+                        while (epoch >= CONFUSION_START && epoch < CONFUSION_START + CONFUSION_DURATION + 1) {
+                            Thread.sleep(deltaInSeconds * 1000L);
+                            epoch = currentEpoch.get();
+                        }
+
+                        System.out.printf("Resuming message processing after confusion %d%n", epoch);
+                    }
+
                     handleMessageDelivery(message);
                 }
             } catch (InterruptedException e) {
@@ -93,9 +108,8 @@ public class StreamletNode {
                 e.printStackTrace();
             }
         });
-        consumerThread.setDaemon(true);
-        consumerThread.start();
     }
+
 
     private void proposeNewBlock(int currentEpoch) throws NoSuchAlgorithmException {
         int transactionCount = random.nextInt(2, 6);
@@ -104,12 +118,12 @@ public class StreamletNode {
             transactions[i] = transactionPoolSimulator.generateNewTransaction();
         }
 
-        Block parent = blockchainManager.getLongestNotarizedChainTip();
+        Block parent = blockchainManager.getLongestNotarizedChainTips().stream().findFirst().get();
 
         Block newBlock = new Block(
                 parent.hash(),
                 currentEpoch,
-                blockchainManager.getChainLength() + 1,
+                parent.length() + 1,
                 transactions
         );
 
@@ -119,49 +133,54 @@ public class StreamletNode {
 
     private void handleMessageDelivery(Message message) {
         switch (message.type()) {
-            case PROPOSE -> {
-                Block proposedBlock = (Block) message.content();
-                votedBlocks.putIfAbsent(proposedBlock, new HashSet<>());
-
-                if (votedBlocks.get(proposedBlock).contains(localId) ||
-                        proposedBlock.length() <= blockchainManager.getChainLength()) {
-                    return;
-                }
-
-                votedBlocks.get(proposedBlock).add(localId);
-                blockchainManager.addBlock(proposedBlock);
-
-                Message voteMessage = new Message(MessageType.VOTE, proposedBlock, localId);
-                urbNode.broadcastFromLocal(voteMessage);
-            }
-
-            case VOTE -> {
-                Block votedBlock = (Block) message.content();
-
-                if (votedBlock.length() < blockchainManager.getChainLength()) {
-                    System.out.printf("Vote ignored, Block %s does not extend the current chain (length = %d)%n",
-                            Arrays.toString(votedBlock.hash()), votedBlock.length());
-                    return;
-                }
-
-                votedBlocks.putIfAbsent(votedBlock, new HashSet<>());
-                votedBlocks.get(votedBlock).add(message.sender());
-
-                if (!blockchainManager.isNotarized(votedBlock) &&
-                        votedBlocks.get(votedBlock).size() > numberOfDistinctNodes / 2) {
-                    blockchainManager.notarizeBlock(votedBlock);
-                    System.out.println("Block " + Arrays.toString(votedBlock.hash()) + " has been notarized");
-                }
-            }
+            case PROPOSE -> handlePropose(message, currentEpoch.get());
+            case VOTE -> handleVote(message);
         }
     }
 
-    private int getLeaderId(int currentEpoch) {
-        if (currentEpoch < CONFUSION_START
-                || currentEpoch >= CONFUSION_START + CONFUSION_DURATION - 1) {
-            return random.nextInt(numberOfDistinctNodes);
+    private void handlePropose(Message message, int epoch) {
+        Block proposedBlock = (Block) message.content();
+
+        if (message.sender() != currentLeaderId) {
+            return;
         }
-        return currentEpoch % numberOfDistinctNodes;
+
+        if (!blockchainManager.extendsAnyLongestNotarizedTip(proposedBlock)) {
+            return;
+        }
+
+        hasSeenValidProposalFromLeader = true;
+
+        votedBlocks.putIfAbsent(proposedBlock, new HashSet<>());
+        votedBlocks.get(proposedBlock).add(localId);
+
+        Message voteMessage = new Message(MessageType.VOTE, proposedBlock, localId);
+        urbNode.broadcastFromLocal(voteMessage);
+
+        blockchainManager.addBlock(proposedBlock);
     }
+
+
+    private void handleVote(Message message) {
+        Block votedBlock = (Block) message.content();
+        votedBlocks.putIfAbsent(votedBlock, new HashSet<>());
+        Set<Integer> votesForBlock = votedBlocks.get(votedBlock);
+        votesForBlock.add(message.sender());
+
+        if (hasSeenValidProposalFromLeader && blockchainManager.extendsAnyLongestNotarizedTip(votedBlock)) {
+            if (votedBlocks.get(votedBlock).size() > numberOfDistinctNodes / 2) {
+                blockchainManager.notarizeBlock(votedBlock);
+            }
+            Message voteMessage = new Message(MessageType.VOTE, votedBlock, localId);
+            urbNode.broadcastToPeers(voteMessage);
+        }
+
+        blockchainManager.addBlock(votedBlock);
+    }
+
+    private int calculateLeaderId(int epoch) {
+        return epoch % numberOfDistinctNodes;
+    }
+
 
 }
