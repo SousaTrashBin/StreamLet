@@ -15,6 +15,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class StreamletNode {
 
+    private final static int CONFUSION_START = 30;
+    private final static int CONFUSION_DURATION = 5;
     private final URBNode urbNode;
     private final int deltaInSeconds;
     private final int numberOfDistinctNodes;
@@ -23,12 +25,9 @@ public class StreamletNode {
     private final Random random = new Random(1L);
     private final BlockchainManager blockchainManager;
     private final Map<Block, Set<Integer>> votedBlocks = new HashMap<>();
-    private final static int CONFUSION_START = 30;
-    private final static int CONFUSION_DURATION = 5;
     private final BlockingQueue<Message> derivableQueue = new LinkedBlockingQueue<>();
     private final AtomicInteger currentEpoch = new AtomicInteger(0);
     private final ExecutorService messageExecutor = Executors.newFixedThreadPool(2);
-    private boolean hasSeenValidProposalFromLeader = false;
     private int currentLeaderId = -1;
 
     public StreamletNode(PeerInfo localPeerInfo, List<PeerInfo> remotePeersInfo, int deltaInSeconds)
@@ -67,7 +66,6 @@ public class StreamletNode {
             if (currentEpochValue % 5 == 0) {
                 blockchainManager.printLinearBlockchain();
             }
-            hasSeenValidProposalFromLeader = false;
         }, epochDurationInSeconds, epochDurationInSeconds, TimeUnit.SECONDS);
     }
 
@@ -149,8 +147,6 @@ public class StreamletNode {
             return;
         }
 
-        hasSeenValidProposalFromLeader = true;
-
         votedBlocks.putIfAbsent(proposedBlock, new HashSet<>());
         votedBlocks.get(proposedBlock).add(localId);
 
@@ -167,12 +163,9 @@ public class StreamletNode {
         Set<Integer> votesForBlock = votedBlocks.get(votedBlock);
         votesForBlock.add(message.sender());
 
-        if (hasSeenValidProposalFromLeader && blockchainManager.extendsAnyLongestNotarizedTip(votedBlock)) {
-            if (votedBlocks.get(votedBlock).size() > numberOfDistinctNodes / 2) {
-                blockchainManager.notarizeBlock(votedBlock);
-            }
-            Message voteMessage = new Message(MessageType.VOTE, votedBlock, localId);
-            urbNode.broadcastToPeers(voteMessage);
+        if (blockchainManager.extendsAnyLongestNotarizedTip(votedBlock)
+                && votedBlocks.get(votedBlock).size() > numberOfDistinctNodes / 2) {
+            blockchainManager.notarizeBlock(votedBlock);
         }
 
         blockchainManager.addBlock(votedBlock);
