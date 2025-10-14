@@ -15,6 +15,7 @@ import java.nio.channels.SocketChannel;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -27,6 +28,7 @@ public class P2PNode implements Runnable, AutoCloseable {
     private final BlockingQueue<Message> incomingMessageQueue = new LinkedBlockingQueue<>();
     private final Selector ioSelector = Selector.open();
     private final Map<Integer, SocketChannel> peerConnections = new ConcurrentHashMap<>();
+    private final Set<Integer> connectedPeers = ConcurrentHashMap.newKeySet();
     private ServerSocketChannel serverChannel;
 
     public P2PNode(PeerInfo localPeerInfo, List<PeerInfo> remotePeersInfo) throws IOException {
@@ -85,20 +87,20 @@ public class P2PNode implements Runnable, AutoCloseable {
                         case READ -> handleIncomingMessage(key);
                     }
                 } catch (IOException e) {
-                    handleConnectionFailure(key, e);
+                    handleConnectionFailure(key);
                 }
             }
             ioSelector.selectedKeys().clear();
         }
     }
 
-    private void handleConnectionFailure(SelectionKey key, IOException e) {
+    private void handleConnectionFailure(SelectionKey key) throws IOException {
         SocketChannel channel = (SocketChannel) key.channel();
         Integer peerId = findPeerIdByChannel(channel);
-        System.out.printf("Lost connection to peer %d", peerId);
+        System.out.printf("Lost connection to peer %d%n", peerId);
 
         if (peerId != null) {
-            peerConnections.remove(peerId);
+            peerConnections.remove(peerId).close();
         }
 
         try {
@@ -150,7 +152,9 @@ public class P2PNode implements Runnable, AutoCloseable {
         clientChannel.write(idBuffer);
 
         peerConnections.put(remotePeer.id(), clientChannel);
-        allPeersConnectedLatch.countDown();
+        if (connectedPeers.add(remotePeer.id())) {
+            allPeersConnectedLatch.countDown();
+        }
         System.out.println(localPeerInfo.id() + " connected to peer " + remotePeer.id());
         clientChannel.register(ioSelector, SelectionKey.OP_READ | SelectionKey.OP_WRITE);
     }
@@ -176,7 +180,9 @@ public class P2PNode implements Runnable, AutoCloseable {
         }
 
         peerConnections.put(remotePeerId, incomingChannel);
-        allPeersConnectedLatch.countDown();
+        if (connectedPeers.add(remotePeerId)) {
+            allPeersConnectedLatch.countDown();
+        }
         System.out.println(localPeerInfo.id() + " accepted connection from peer " + remotePeerId);
         incomingChannel.register(ioSelector, SelectionKey.OP_READ | SelectionKey.OP_WRITE);
     }
