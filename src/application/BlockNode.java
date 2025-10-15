@@ -2,13 +2,11 @@ package application;
 
 import utils.application.Block;
 
-import java.util.HashSet;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 
 class BlockNode {
     final Block block;
-    final BlockNode parent;
+    BlockNode parent;
     final Set<BlockNode> children = new HashSet<>();
     boolean notarized = false;
     boolean finalized = false;
@@ -16,10 +14,6 @@ class BlockNode {
     BlockNode(Block block, BlockNode parent) {
         this.block = block;
         this.parent = parent;
-    }
-
-    int getLength() {
-        return block.length();
     }
 
     public void addChildren(BlockNode blockNode) {
@@ -36,4 +30,24 @@ class BlockNode {
     public int hashCode() {
         return Objects.hashCode(block);
     }
+
+    public List<Block> getNotarizedTips() {
+        List<Block> tips = new ArrayList<>();
+        buildNotarizedTipsAux(tips);
+        return tips;
+    }
+
+    private void buildNotarizedTipsAux(List<Block> tips) {
+        if (!notarized) {
+            return;
+        }
+        if (this.children.isEmpty()) {
+            tips.add(block);
+            return;
+        }
+        for (BlockNode blockNode : this.children) {
+            blockNode.buildNotarizedTipsAux(tips);
+        }
+    }
+
 }

@@ -36,56 +36,34 @@ public class BlockchainManager {
     }
 
     public void notarizeBlock(Block block) {
-        BlockNode node = hashToNode.get(new HashKey(block.hash()));
-        if (node == null) return;
-
+        BlockNode parent = hashToNode.get(new HashKey(block.parentHash()));
+        BlockNode node = hashToNode.computeIfAbsent(new HashKey(block.hash()), _ -> new BlockNode(block, parent));
+        parent.addChildren(node);
+        node.parent = parent;
         node.notarized = true;
         tryToFinalize(node);
     }
 
     public void addBlock(Block block) {
         HashKey blockKey = new HashKey(block.hash());
-
-        if (hashToNode.containsKey(blockKey)) {
-            return;
-        }
-
-        HashKey parentKey = new HashKey(block.parentHash());
-        BlockNode parent = hashToNode.get(parentKey);
-
-        if (parent == null) {
-            return;
-        }
-
-        BlockNode blockNode = new BlockNode(block, parent);
-        parent.addChildren(blockNode);
-
+        BlockNode blockNode = new BlockNode(block, null);
         hashToNode.put(blockKey, blockNode);
     }
 
-    public boolean extendsAnyLongestNotarizedTip(Block proposedBlock) {
-        return getLongestNotarizedChainTips().stream()
-                .anyMatch(tip -> Arrays.equals(proposedBlock.parentHash(), tip.hash()));
+    public boolean extendNotarizedAnyChainTip(Block proposedBlock) {
+        return getNotarizedTips().stream()
+                .anyMatch(tip -> proposedBlock.length() > tip.length() &&
+                        Arrays.equals(proposedBlock.parentHash(), tip.hash()));
     }
 
-    public List<Block> getLongestNotarizedChainTips() {
-        int maxLength = hashToNode.values().stream()
-                .filter(blockNode -> blockNode.notarized)
-                .mapToInt(BlockNode::getLength)
-                .max()
-                .orElse(0);
-
-        return hashToNode.values().stream()
-                .filter(node -> node.getLength() == maxLength)
-                .map(node -> node.block)
-                .toList();
+    public List<Block> getNotarizedTips() {
+        return genesis.getNotarizedTips();
     }
 
 
     private void tryToFinalize(BlockNode b1) {
         BlockNode b2 = b1.parent;
         BlockNode b3 = (b2 != null) ? b2.parent : null;
-
         if (b2 != null && b3 != null &&
                 b1.notarized && b2.notarized && b3.notarized &&
                 b1.block.epoch() == b2.block.epoch() + 1 &&
@@ -104,20 +82,22 @@ public class BlockchainManager {
 
     public void printLinearBlockchain() {
         System.out.println("\n=== Blockchain Tree ===");
-        printSubtree(genesis, 0);
+        StringBuilder sb = new StringBuilder();
+        printSubtree(genesis, 0, sb);
+        System.out.println(sb);
     }
 
-    private void printSubtree(BlockNode node, int indent) {
+    private void printSubtree(BlockNode node, int indent, StringBuilder sb) {
         final String RESET = "\u001B[0m";
         final String GREEN = "\u001B[32m";
         final String YELLOW = "\u001B[33m";
 
         String prefix = " ".repeat(indent * 2);
         String color = node.finalized ? GREEN : (node.notarized ? YELLOW : RESET);
-        System.out.printf("%s%sBlock[%d-%d]%s%n", prefix, color, node.block.epoch(), node.block.length(), RESET);
+        sb.append(String.format("%s%sBlock[%d-%d]%s%n", prefix, color, node.block.epoch(), node.block.length(), RESET));
 
         for (BlockNode child : node.children) {
-            printSubtree(child, indent + 1);
+            printSubtree(child, indent + 1, sb);
         }
     }
 }
