@@ -26,13 +26,13 @@ public class BlockchainManager {
     private static final Block GENESIS_BLOCK =
             new Block(new byte[SHA1_LENGTH], 0, 1, new Transaction[0]);
 
-    private final BlockNode genesis;
+    private final BlockNode notarizedBlockChain;
     private final Map<HashKey, BlockNode> hashToNode = new HashMap<>();
 
     public BlockchainManager() {
-        genesis = new BlockNode(GENESIS_BLOCK, null);
-        genesis.notarized = true;
-        hashToNode.put(new HashKey(GENESIS_BLOCK.hash()), genesis);
+        notarizedBlockChain = new BlockNode(GENESIS_BLOCK, null);
+        notarizedBlockChain.notarized = true;
+        hashToNode.put(new HashKey(GENESIS_BLOCK.hash()), notarizedBlockChain);
     }
 
     public void notarizeBlock(Block block) {
@@ -57,7 +57,7 @@ public class BlockchainManager {
     }
 
     public List<Block> getNotarizedTips() {
-        return genesis.getNotarizedTips();
+        return notarizedBlockChain.getNotarizedTips();
     }
 
 
@@ -80,10 +80,32 @@ public class BlockchainManager {
         }
     }
 
+    private BlockNode buildWholeChain() {
+        Map<HashKey, BlockNode> newNodes = new HashMap<>();
+        for (BlockNode oldNode : hashToNode.values()) {
+            BlockNode newNode = new BlockNode(oldNode.block, null);
+            newNode.notarized = oldNode.notarized;
+            newNode.finalized = oldNode.finalized;
+            newNodes.put(new HashKey(newNode.block.hash()), newNode);
+        }
+
+        BlockNode root = newNodes.get(new HashKey(GENESIS_BLOCK.hash()));
+
+        for (BlockNode node : newNodes.values()) {
+            if (node.block != GENESIS_BLOCK) {
+                BlockNode parent = newNodes.get(new HashKey(node.block.parentHash()));
+                node.parent = parent;
+                parent.addChildren(node);
+            }
+        }
+
+        return root;
+    }
+
     public void printLinearBlockchain() {
         System.out.println("\n=== Blockchain Tree ===");
         StringBuilder sb = new StringBuilder();
-        printSubtree(genesis, 0, sb);
+        printSubtree(buildWholeChain(), 0, sb);
         System.out.println(sb);
     }
 
