@@ -62,19 +62,16 @@ public class URBNode {
     }
 
     private void deliverMessage(Message message) {
+        if (!deliveredMessages.add(message)) {
+            return;
+        }
         switch (message.type()) {
             case ECHO -> {
-                broadcastToPeers(message);
-                deliveredMessages.add(message);
-                if (message.content() instanceof Message contentMessage
-                        && deliveredMessages.add(contentMessage)) {
-                    deliverToApplication(contentMessage);
+                if (message.content() instanceof Message contentMessage) {
+                    broadcastFromLocal(contentMessage);
                 }
             }
             case PROPOSE, VOTE -> {
-                if (!deliveredMessages.add(message)) {
-                    return;
-                }
                 Message echoMessage = new Message(MessageType.ECHO, message, localPeerId);
                 broadcastToPeers(echoMessage);
                 deliverToApplication(message);
