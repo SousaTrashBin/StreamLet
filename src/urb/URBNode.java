@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class URBNode {
     private final Set<Message> deliveredMessages = new HashSet<>();
@@ -19,17 +20,16 @@ public class URBNode {
     private final P2PNode networkLayer;
     private final int localPeerId;
     private final URBCallback callback;
-    private final ExecutorService executor;
+    private final ExecutorService executor = Executors.newFixedThreadPool(2);
 
     public URBNode(PeerInfo localPeerInfo,
                    List<PeerInfo> remotePeersInfo,
-                   URBCallback callback, ExecutorService messageExecutor) throws IOException {
+                   URBCallback callback) throws IOException {
         localPeerId = localPeerInfo.id();
         remotePeerIds = remotePeersInfo.stream().map(PeerInfo::id).toList();
         networkLayer = new P2PNode(localPeerInfo, remotePeersInfo);
-        new Thread(networkLayer).start();
+        executor.submit(networkLayer);
         this.callback = callback;
-        executor = messageExecutor;
     }
 
     public void waitForAllPeersToConnect() throws InterruptedException {
@@ -78,7 +78,6 @@ public class URBNode {
             }
         }
     }
-
 
     private void deliverToApplication(Message message) {
         callback.onDelivery(message);

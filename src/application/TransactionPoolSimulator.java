@@ -25,4 +25,11 @@ public class TransactionPoolSimulator {
 
         return new Transaction(this.transactionId++, amount, sender, receiver);
     }
+
+    public Transaction[] generateTransactions() {
+        int count = random.nextInt(2, 6);
+        Transaction[] transactions = new Transaction[count];
+        for (int i = 0; i < count; i++) transactions[i] = generateNewTransaction();
+        return transactions;
+    }
 }

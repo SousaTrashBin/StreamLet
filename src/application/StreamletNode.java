@@ -13,27 +13,28 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
-record SeenProposalKey(int leader, int epoch) {
-
+record SeenProposal(int leader, int epoch) {
 }
 
 public class StreamletNode {
+    private static final int CONFUSION_START = 20;
+    private static final int CONFUSION_DURATION = 12;
 
-    private final static int CONFUSION_START = 8;
-    private final static int CONFUSION_DURATION = 12;
-    private final URBNode urbNode;
     private final int deltaInSeconds;
     private final int numberOfDistinctNodes;
     private final TransactionPoolSimulator transactionPoolSimulator;
-    private final int localId;
     private final Random random = new Random(1L);
+    private final AtomicInteger currentEpoch = new AtomicInteger(0);
+
+    private final int localId;
+    private final URBNode urbNode;
     private final BlockchainManager blockchainManager;
     private final Map<Block, Set<Integer>> votedBlocks = new HashMap<>();
     private final BlockingQueue<Message> derivableQueue = new LinkedBlockingQueue<>();
-    private final AtomicInteger currentEpoch = new AtomicInteger(0);
-    private final ExecutorService messageExecutor = Executors.newFixedThreadPool(2);
-    private final Map<SeenProposalKey, Block> seenProposals = new HashMap<>();
-    private int currentLeaderId = -1;
+    private final Set<SeenProposal> seenProposals = new HashSet<>();
+
+    private final ExecutorService executor = Executors.newCachedThreadPool();
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
     public StreamletNode(PeerInfo localPeerInfo, List<PeerInfo> remotePeersInfo, int deltaInSeconds)
             throws IOException {
@@ -42,96 +43,68 @@ public class StreamletNode {
         this.deltaInSeconds = deltaInSeconds;
         transactionPoolSimulator = new TransactionPoolSimulator(numberOfDistinctNodes);
         blockchainManager = new BlockchainManager();
-        urbNode = new URBNode(localPeerInfo, remotePeersInfo, derivableQueue::add, messageExecutor);
+        urbNode = new URBNode(localPeerInfo, remotePeersInfo, derivableQueue::add);
     }
 
     public void startProtocol() throws InterruptedException {
-        launchConsumerThread();
-        launchUrbThread();
-
+        launchThreads();
         urbNode.waitForAllPeersToConnect();
 
-        long epochDurationInSeconds = 2L * deltaInSeconds;
-
-        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
-
-        scheduler.scheduleAtFixedRate(() -> {
-            int currentEpochValue = currentEpoch.addAndGet(1);
-            currentLeaderId = calculateLeaderId(currentEpochValue);
-            System.out.printf("Epoch advanced to %d, current leader is %d%n", currentEpochValue, currentLeaderId);
-
-            if (localId == currentLeaderId) {
-                try {
-                    proposeNewBlock(currentEpochValue);
-                } catch (NoSuchAlgorithmException e) {
-                    e.printStackTrace();
-                }
-            }
-
-            if (currentEpochValue % 5 == 0) {
-                blockchainManager.printLinearBlockchain();
-            }
-        }, epochDurationInSeconds, epochDurationInSeconds, TimeUnit.SECONDS);
+        long epochDuration = 2L * deltaInSeconds;
+        scheduler.scheduleAtFixedRate(this::advanceEpoch, epochDuration, epochDuration, TimeUnit.SECONDS);
     }
 
-    private void launchUrbThread() {
-        Thread urbThread = new Thread(() -> {
+    private void advanceEpoch() {
+        int epoch = currentEpoch.incrementAndGet();
+        int currentLeaderId = calculateLeaderId(epoch);
+        System.out.printf("Epoch %d, leader %d%n", epoch, currentLeaderId);
+
+        if (localId == currentLeaderId) {
+            try {
+                proposeNewBlock(epoch);
+            } catch (NoSuchAlgorithmException e) {
+                e.printStackTrace();
+            }
+        }
+
+        if (epoch % 5 == 0) blockchainManager.printLinearBlockchain();
+    }
+
+    private void launchThreads() {
+        executor.submit(() -> {
             try {
                 urbNode.startURBNode();
             } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        });
-        urbThread.setDaemon(true);
-        urbThread.start();
-    }
-
-    private void launchConsumerThread() {
-        messageExecutor.execute(() -> {
-            try {
-                while (true) {
-                    Message message = derivableQueue.take();
-                    int epoch = currentEpoch.get();
-
-                    if (epoch >= CONFUSION_START && epoch < CONFUSION_START + CONFUSION_DURATION + 1) {
-                        System.out.printf("pausing message processing during confusion %d%n", epoch);
-
-                        while (epoch >= CONFUSION_START && epoch < CONFUSION_START + CONFUSION_DURATION + 1) {
-                            Thread.sleep(deltaInSeconds * 1000L);
-                            epoch = currentEpoch.get();
-                        }
-
-                        System.out.printf("resuming message processing after confusion %d%n", epoch);
-                    }
-
-                    handleMessageDelivery(message);
-                }
-            } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                e.printStackTrace();
             }
         });
+
+        executor.submit(this::consumeMessages);
     }
 
+    private void consumeMessages() {
+        try {
+            while (true) {
+                Message message = derivableQueue.take();
 
-    private void proposeNewBlock(int currentEpoch) throws NoSuchAlgorithmException {
-        int transactionCount = random.nextInt(2, 6);
-        Transaction[] transactions = new Transaction[transactionCount];
-        for (int i = 0; i < transactionCount; i++) {
-            transactions[i] = transactionPoolSimulator.generateNewTransaction();
+                while (inConfusionEpoch(currentEpoch.get())) {
+                    System.out.printf("Pausing message processing during confusion %d%n", currentEpoch.get());
+                    Thread.sleep(deltaInSeconds * 1000L);
+                }
+
+                handleMessageDelivery(message);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
+    }
 
+    private void proposeNewBlock(int epoch) throws NoSuchAlgorithmException {
         Block parent = blockchainManager.getNotarizedTips().getFirst();
+        Transaction[] transactions = transactionPoolSimulator.generateTransactions();
 
-        Block newBlock = new Block(
-                parent.hash(),
-                currentEpoch,
-                parent.length() + 1,
-                transactions
-        );
-
-        Message proposeMessage = new Message(MessageType.PROPOSE, newBlock, localId);
-        urbNode.broadcastFromLocal(proposeMessage);
+        Block newBlock = new Block(parent.hash(), epoch, parent.length() + 1, transactions);
+        urbNode.broadcastFromLocal(new Message(MessageType.PROPOSE, newBlock, localId));
     }
 
     private void handleMessageDelivery(Message message) {
@@ -143,42 +116,35 @@ public class StreamletNode {
     }
 
     private void handlePropose(Message message) {
-        Block proposedBlock = (Block) message.content();
+        Block block = (Block) message.content();
+        SeenProposal proposal = new SeenProposal(message.sender(), block.epoch());
 
-        SeenProposalKey seenProposalKey = new SeenProposalKey(message.sender(), proposedBlock.epoch());
-        if (seenProposals.containsKey(seenProposalKey)
-                || !blockchainManager.extendNotarizedAnyChainTip(proposedBlock)) {
+        if (seenProposals.contains(proposal) || !blockchainManager.extendNotarizedAnyChainTip(block))
             return;
-        }
 
-        seenProposals.put(seenProposalKey, proposedBlock);
-        blockchainManager.addBlock(proposedBlock);
-
-        Message voteMessage = new Message(MessageType.VOTE, proposedBlock, localId);
-        urbNode.broadcastFromLocal(voteMessage);
-
+        seenProposals.add(proposal);
+        blockchainManager.addBlock(block);
+        urbNode.broadcastFromLocal(new Message(MessageType.VOTE, block, localId));
     }
 
 
     private void handleVote(Message message) {
-        Block votedBlock = (Block) message.content();
+        Block block = (Block) message.content();
+        votedBlocks.computeIfAbsent(block, k -> new HashSet<>()).add(message.sender());
 
-        votedBlocks.putIfAbsent(votedBlock, new HashSet<>());
-        Set<Integer> votesForBlock = votedBlocks.get(votedBlock);
-        votesForBlock.add(message.sender());
-
-        if (blockchainManager.extendNotarizedAnyChainTip(votedBlock)
-                && votedBlocks.get(votedBlock).size() > numberOfDistinctNodes / 2) {
-            blockchainManager.notarizeBlock(votedBlock);
+        if (blockchainManager.extendNotarizedAnyChainTip(block)
+                && votedBlocks.get(block).size() > numberOfDistinctNodes / 2) {
+            blockchainManager.notarizeBlock(block);
         }
+    }
+
+    private boolean inConfusionEpoch(int epoch) {
+        return epoch >= CONFUSION_START && epoch < CONFUSION_START + CONFUSION_DURATION + 1;
     }
 
     private int calculateLeaderId(int epoch) {
-        if (epoch < CONFUSION_START || epoch >= CONFUSION_START + CONFUSION_DURATION + 1) {
-            random.nextInt(numberOfDistinctNodes);
-        }
-        return epoch % numberOfDistinctNodes;
+        return inConfusionEpoch(epoch) ? epoch % numberOfDistinctNodes
+                : random.nextInt(numberOfDistinctNodes);
     }
-
 
 }
