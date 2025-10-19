@@ -30,7 +30,7 @@ public class StreamletNode {
     private final URBNode urbNode;
     private final BlockchainManager blockchainManager;
     private final Map<Block, Set<Integer>> votedBlocks = new HashMap<>();
-    private final BlockingQueue<Message> derivableQueue = new LinkedBlockingQueue<>();
+    private final BlockingQueue<Message> derivableQueue = new LinkedBlockingQueue<>(1000);
     private final Set<SeenProposal> seenProposals = new HashSet<>();
 
     private final ExecutorService executor = Executors.newCachedThreadPool();
@@ -51,7 +51,15 @@ public class StreamletNode {
         urbNode.waitForAllPeersToConnect();
 
         long epochDuration = 2L * deltaInSeconds;
-        scheduler.scheduleAtFixedRate(this::advanceEpoch, epochDuration, epochDuration, TimeUnit.SECONDS);
+        scheduler.scheduleAtFixedRate(this::safeAdvanceEpoch, epochDuration, epochDuration, TimeUnit.SECONDS);
+    }
+
+    private void safeAdvanceEpoch() {
+        try {
+            advanceEpoch();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     private void advanceEpoch() {
@@ -83,13 +91,19 @@ public class StreamletNode {
     }
 
     private void consumeMessages() {
+        final Queue<Message> bufferedMessages = new LinkedList<>();
         try {
             while (true) {
-                Message message = derivableQueue.take();
+                Message message = derivableQueue.poll(100, TimeUnit.MILLISECONDS);
+                if (message == null) continue;
 
-                while (inConfusionEpoch(currentEpoch.get())) {
-                    System.out.printf("Pausing message processing during confusion %d%n", currentEpoch.get());
-                    Thread.sleep(2 * deltaInSeconds * 1000L);
+                if (inConfusionEpoch(currentEpoch.get())) {
+                    bufferedMessages.add(message);
+                    continue;
+                }
+
+                while (!bufferedMessages.isEmpty()) {
+                    handleMessageDelivery(bufferedMessages.poll());
                 }
 
                 handleMessageDelivery(message);
@@ -100,9 +114,14 @@ public class StreamletNode {
     }
 
     private void proposeNewBlock(int epoch) throws NoSuchAlgorithmException {
-        Block parent = blockchainManager.getNotarizedTips().stream()
-                .max(Comparator.comparingInt(Block::length).thenComparing(Block::epoch))
-                .get();
+        Optional<Block> parentOpt = blockchainManager.getNotarizedTips().stream()
+                .max(Comparator.comparingInt(Block::length).thenComparing(Block::epoch));
+
+        if (parentOpt.isEmpty()) {
+            return;
+        }
+
+        Block parent = parentOpt.get();
         Transaction[] transactions = transactionPoolSimulator.generateTransactions();
 
         Block newBlock = new Block(parent.getSHA1(), epoch, parent.length() + 1, transactions);
