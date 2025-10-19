@@ -67,7 +67,7 @@ public class StreamletNode {
             }
         }
 
-        if (epoch % 5 == 0) blockchainManager.printLinearBlockchain();
+        if (epoch % 5 == 0) blockchainManager.printBlockchainTree();
     }
 
     private void launchThreads() {
@@ -89,7 +89,7 @@ public class StreamletNode {
 
                 while (inConfusionEpoch(currentEpoch.get())) {
                     System.out.printf("Pausing message processing during confusion %d%n", currentEpoch.get());
-                    Thread.sleep(deltaInSeconds * 1000L);
+                    Thread.sleep(2 * deltaInSeconds * 1000L);
                 }
 
                 handleMessageDelivery(message);
@@ -100,10 +100,12 @@ public class StreamletNode {
     }
 
     private void proposeNewBlock(int epoch) throws NoSuchAlgorithmException {
-        Block parent = blockchainManager.getNotarizedTips().getFirst();
+        Block parent = blockchainManager.getNotarizedTips().stream()
+                .max(Comparator.comparingInt(Block::length).thenComparing(Block::epoch))
+                .get();
         Transaction[] transactions = transactionPoolSimulator.generateTransactions();
 
-        Block newBlock = new Block(parent.hash(), epoch, parent.length() + 1, transactions);
+        Block newBlock = new Block(parent.getSHA1(), epoch, parent.length() + 1, transactions);
         urbNode.broadcastFromLocal(new Message(MessageType.PROPOSE, newBlock, localId));
     }
 
@@ -123,17 +125,20 @@ public class StreamletNode {
             return;
 
         seenProposals.add(proposal);
-        blockchainManager.addBlock(block);
-        urbNode.broadcastFromLocal(new Message(MessageType.VOTE, block, localId));
+        blockchainManager.addPendingBlock(block);
+
+        Block voteBlock = new Block(block.parentHash(), block.epoch(), block.length(), new Transaction[0]);
+        urbNode.broadcastFromLocal(new Message(MessageType.VOTE, voteBlock, localId));
     }
 
 
     private void handleVote(Message message) {
         Block block = (Block) message.content();
-        votedBlocks.computeIfAbsent(block, k -> new HashSet<>()).add(message.sender());
+        votedBlocks.computeIfAbsent(block, _ -> new HashSet<>()).add(message.sender());
 
         if (blockchainManager.extendNotarizedAnyChainTip(block)
                 && votedBlocks.get(block).size() > numberOfDistinctNodes / 2) {
+
             blockchainManager.notarizeBlock(block);
         }
     }
