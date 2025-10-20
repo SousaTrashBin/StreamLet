@@ -3,10 +3,7 @@ package application;
 import utils.application.Block;
 import utils.application.Transaction;
 
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class BlockchainManager {
     private static final int SHA1_LENGTH = 20;
@@ -83,14 +80,16 @@ public class BlockchainManager {
         Map<HashKey, BlockNode> newHashMap = new HashMap<>();
         Map<Block, BlockNode> newIdentityMap = new HashMap<>();
 
-        for (BlockNode oldNode : blockToNode.values()) {
+        List<BlockNode> blockToNodeValuesSnapshot = new ArrayList<>(blockToNode.values());
+        for (BlockNode oldNode : blockToNodeValuesSnapshot) {
             BlockNode newNode = oldNode.copyWithoutParent();
             newHashMap.put(new HashKey(oldNode.block.getSHA1()), newNode);
 
             newIdentityMap.put(newNode.block, newNode);
         }
 
-        for (BlockNode node : newIdentityMap.values()) {
+        List<BlockNode> identityMapValuesSnapshot = new ArrayList<>(newIdentityMap.values());
+        for (BlockNode node : identityMapValuesSnapshot) {
             if (node.block == GENESIS_BLOCK) continue;
             BlockNode parent = newHashMap.get(new HashKey(node.block.parentHash()));
             if (parent == null) continue;
