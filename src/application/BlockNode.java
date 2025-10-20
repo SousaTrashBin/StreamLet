@@ -61,10 +61,12 @@ class BlockNode {
         final String YELLOW = "\u001B[33m";
         String indent = " ".repeat(depth * 2);
         String color = finalized ? GREEN : (notarized ? YELLOW : RESET);
-
-        output.append(String.format("%s%sBlock[%d-%d]%s%n",
-                indent, color, block.epoch(), block.length(), RESET));
-
+        if (parent == null) {
+            output.append(String.format("%sGENESIS%s%n", color, RESET));
+        } else {
+            output.append(String.format("%s%sBlock[%d-%d]%s%n",
+                    indent, color, block.epoch(), block.length(), RESET));
+        }
         children.stream()
                 .sorted(Comparator.comparingInt(child -> child.block.epoch()))
                 .forEach(child -> child.buildTreeString(depth + 1, output));
