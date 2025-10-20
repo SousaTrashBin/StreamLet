@@ -114,8 +114,7 @@ public class StreamletNode {
     }
 
     private void proposeNewBlock(int epoch) throws NoSuchAlgorithmException {
-        Optional<Block> parentOpt = blockchainManager.getNotarizedTips().stream()
-                .max(Comparator.comparingInt(Block::length).thenComparing(Block::epoch));
+        Optional<Block> parentOpt = blockchainManager.getNotarizedTips().stream().findFirst();
 
         if (parentOpt.isEmpty()) {
             return;
@@ -157,7 +156,6 @@ public class StreamletNode {
 
         if (blockchainManager.extendNotarizedAnyChainTip(block)
                 && votedBlocks.get(block).size() > numberOfDistinctNodes / 2) {
-
             blockchainManager.notarizeBlock(block);
         }
     }

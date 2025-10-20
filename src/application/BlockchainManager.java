@@ -26,11 +26,14 @@ public class BlockchainManager {
     }
 
     public void notarizeBlock(Block block) {
+        BlockNode node = blockToNode.get(block);
+        if (node == null || node.notarized) {
+            return;
+        }
         BlockNode parent = hashToNode.get(new HashKey(block.parentHash()));
         if (parent == null) {
             return;
         }
-        BlockNode node = blockToNode.get(block);
         parent.addChild(node);
         node.parent = parent;
         node.notarized = true;
@@ -89,12 +92,10 @@ public class BlockchainManager {
 
         for (BlockNode node : newIdentityMap.values()) {
             if (node.block == GENESIS_BLOCK) continue;
-
             BlockNode parent = newHashMap.get(new HashKey(node.block.parentHash()));
-            if (parent != null) {
-                node.parent = parent;
-                parent.addChild(node);
-            }
+            if (parent == null) continue;
+            node.parent = parent;
+            parent.addChild(node);
         }
 
         return newIdentityMap.get(GENESIS_BLOCK);
