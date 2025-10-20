@@ -19,6 +19,7 @@ record SeenProposal(int leader, int epoch) {
 public class StreamletNode {
     private static final int CONFUSION_START = 0;
     private static final int CONFUSION_DURATION = 2;
+    public static final int BLOCK_CHAIN_PRINT_EPOCH_FREQUENCY = 5;
 
     private final int deltaInSeconds;
     private final int numberOfDistinctNodes;
@@ -51,7 +52,7 @@ public class StreamletNode {
         urbNode.waitForAllPeersToConnect();
 
         long epochDuration = 2L * deltaInSeconds;
-        scheduler.scheduleAtFixedRate(this::safeAdvanceEpoch, epochDuration, epochDuration, TimeUnit.SECONDS);
+        scheduler.scheduleAtFixedRate(this::safeAdvanceEpoch, 0, epochDuration, TimeUnit.SECONDS);
     }
 
     private void safeAdvanceEpoch() {
@@ -74,7 +75,7 @@ public class StreamletNode {
                 e.printStackTrace();
             }
         }
-        if (epoch % 5 == 0) blockchainManager.printBlockchainTree();
+        if (epoch != 0 && epoch % BLOCK_CHAIN_PRINT_EPOCH_FREQUENCY == 0) blockchainManager.printBlockchainTree();
         currentEpoch.incrementAndGet();
     }
 
