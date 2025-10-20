@@ -17,8 +17,8 @@ record SeenProposal(int leader, int epoch) {
 }
 
 public class StreamletNode {
-    private static final int CONFUSION_START = 20;
-    private static final int CONFUSION_DURATION = 12;
+    private static final int CONFUSION_START = 0;
+    private static final int CONFUSION_DURATION = 2;
 
     private final int deltaInSeconds;
     private final int numberOfDistinctNodes;
@@ -63,7 +63,7 @@ public class StreamletNode {
     }
 
     private void advanceEpoch() {
-        int epoch = currentEpoch.incrementAndGet();
+        int epoch = currentEpoch.get();
         int currentLeaderId = calculateLeaderId(epoch);
         System.out.printf("Epoch %d, leader %d%n", epoch, currentLeaderId);
 
@@ -74,8 +74,8 @@ public class StreamletNode {
                 e.printStackTrace();
             }
         }
-
         if (epoch % 5 == 0) blockchainManager.printBlockchainTree();
+        currentEpoch.incrementAndGet();
     }
 
     private void launchThreads() {
@@ -161,7 +161,7 @@ public class StreamletNode {
     }
 
     private boolean inConfusionEpoch(int epoch) {
-        return epoch >= CONFUSION_START && epoch < CONFUSION_START + CONFUSION_DURATION + 1;
+        return epoch >= CONFUSION_START && epoch <= CONFUSION_START + CONFUSION_DURATION - 1;
     }
 
     private int calculateLeaderId(int epoch) {
