@@ -6,6 +6,7 @@ import utils.application.Transaction;
 
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.Gatherers;
 
 public class BlockchainManager {
     private static final int SHA1_LENGTH = 20;
@@ -15,7 +16,8 @@ public class BlockchainManager {
 
     private final Set<ChainView> seenNotarizedChains = new HashSet<>();
     private LinkedList<Block> biggestNotarizedChain = new LinkedList<>();
-    private LinkedList<Block> biggestFinalizedChain = new LinkedList<>();
+    private final Set<ChainView> finalizedChains = new HashSet<>();
+
     private final HashMap<Block, BlockWithChain> pendingProposes = new HashMap<>();
 
     public BlockchainManager() {
@@ -34,20 +36,22 @@ public class BlockchainManager {
         seenNotarizedChains.add(new ChainView(chain));
         if (chain.getLast().length() > biggestNotarizedChain.getLast().length()) {
             biggestNotarizedChain = chain;
-            tryToUpdateFinalizedChain();
         }
+        tryToFinalizeChain(chain);
     }
 
-    private void tryToUpdateFinalizedChain() {
-        int size = biggestNotarizedChain.size();
+    private void tryToFinalizeChain(LinkedList<Block> chain) {
+        int size = chain.size();
         if (size < 3) return;
-
-        Block b0 = biggestNotarizedChain.get(size - 3);
-        Block b1 = biggestNotarizedChain.get(size - 2);
-        Block b2 = biggestNotarizedChain.get(size - 1);
-
-        if (b1.epoch() - b0.epoch() == 1 && b2.epoch() - b1.epoch() == 1) {
-            biggestFinalizedChain = new LinkedList<>(biggestNotarizedChain.subList(0, size - 1));
+        boolean shouldChainBeFinalized = chain
+                .subList(chain.size() - 3, chain.size())
+                .stream().map(Block::epoch)
+                .gather(Gatherers.windowSliding(2))
+                .peek(System.out::println)
+                .map(window -> window.getLast() - window.getFirst())
+                .allMatch(delta -> delta == 1);
+        if (shouldChainBeFinalized) {
+            finalizedChains.add(new ChainView(new LinkedList<>(biggestNotarizedChain.subList(0, size - 1))));
         }
     }
 
@@ -74,16 +78,22 @@ public class BlockchainManager {
         String header = "=== LONGEST FINALIZED CHAIN ===";
         String border = "=".repeat(header.length());
 
+        LinkedList<Block> biggestFinalizedChain = finalizedChains.stream()
+                .max(Comparator.comparing(c -> c.blocks().getLast().length()))
+                .map(ChainView::blocks)
+                .orElse(new LinkedList<>());
+
         String chainString = biggestFinalizedChain.stream()
-                .map(block -> GREEN + "Block[%d-%d]".formatted(block.epoch(), block.length()) + RESET)
-                .collect(Collectors.joining(" <- "));
+                .skip(1)
+                .map(block -> "%sBlock[%d-%d]%s".formatted(GREEN, block.epoch(), block.length(), RESET))
+                .collect(Collectors.joining(" <- ", "%sGENESIS%s <- ".formatted(GREEN, RESET), ""));
 
         String output = String.format(
                 "%s%n%s%n%s%n%s%n%s",
                 border,
                 header,
                 border,
-                chainString,
+                biggestFinalizedChain.isEmpty() ? "No Finalized Chain Yet" : chainString,
                 border
         );
 
