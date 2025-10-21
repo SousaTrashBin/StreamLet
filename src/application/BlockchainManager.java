@@ -1,6 +1,7 @@
 package application;
 
 import utils.application.Block;
+import utils.application.BlockWithChain;
 import utils.application.Transaction;
 
 import java.util.*;
@@ -13,10 +14,9 @@ public class BlockchainManager {
             new Block(new byte[SHA1_LENGTH], 0, 0, new Transaction[0]);
 
     private final Set<ChainView> seenNotarizedChains = new HashSet<>();
-    private final HashMap<Block, Block> headerToBlock = new HashMap<>();
-    private final Set<Block> hasNotarized = new HashSet<>();
     private LinkedList<Block> biggestNotarizedChain = new LinkedList<>();
     private LinkedList<Block> biggestFinalizedChain = new LinkedList<>();
+    private final HashMap<Block, BlockWithChain> pendingProposes = new HashMap<>();
 
     public BlockchainManager() {
         biggestNotarizedChain.add(GENESIS_BLOCK);
@@ -24,18 +24,21 @@ public class BlockchainManager {
     }
 
     public void notarizeBlock(Block headerBlock) {
-        Block fullBlock = headerToBlock.get(headerBlock);
-        if (fullBlock == null
-                || hasNotarized.contains(fullBlock)
-                || fullBlock.length() <= biggestNotarizedChain.getLast().length()) {
+        BlockWithChain proposal = pendingProposes.get(headerBlock);
+        if (proposal == null) {
             return;
         }
-        hasNotarized.add(fullBlock);
-        biggestNotarizedChain.add(fullBlock);
-        tryUpdateFinalizedChain();
+        LinkedList<Block> chain = proposal.chain();
+        chain.add(proposal.block());
+        pendingProposes.remove(headerBlock);
+        seenNotarizedChains.add(new ChainView(chain));
+        if (chain.getLast().length() > biggestNotarizedChain.getLast().length()) {
+            biggestNotarizedChain = chain;
+            tryToUpdateFinalizedChain();
+        }
     }
 
-    private void tryUpdateFinalizedChain() {
+    private void tryToUpdateFinalizedChain() {
         int size = biggestNotarizedChain.size();
         if (size < 3) return;
 
@@ -48,21 +51,19 @@ public class BlockchainManager {
         }
     }
 
-    public boolean onPropose(Block proposedBlock, LinkedList<Block> parentChain) {
-        seenNotarizedChains.add(new ChainView(parentChain));
-        if (parentChain.size() > biggestNotarizedChain.size()) {
-            biggestNotarizedChain = parentChain;
-        }
-        Block parentTip = parentChain.getLast();
+    public boolean onPropose(BlockWithChain proposal) {
+        Block proposedBlock = proposal.block();
+        LinkedList<Block> chain = proposal.chain();
+        Block parentTip = chain.getLast();
 
         if (!Arrays.equals(proposedBlock.parentHash(), parentTip.getSHA1())) return false;
 
         boolean isStrictlyLonger = seenNotarizedChains.stream()
-                .allMatch(chain -> proposedBlock.length() > chain.blocks().getLast().length());
+                .anyMatch(notarizedChain -> proposedBlock.length() > notarizedChain.blocks().getLast().length());
         if (!isStrictlyLonger) {
             return false;
         }
-        headerToBlock.put(proposedBlock, proposedBlock);
+        pendingProposes.put(proposedBlock, proposal);
         return true;
     }
 

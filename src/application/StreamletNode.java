@@ -118,7 +118,7 @@ public class StreamletNode {
         Transaction[] transactions = transactionPoolSimulator.generateTransactions();
 
         Block newBlock = new Block(parent.getSHA1(), epoch, parent.length() + 1, transactions);
-        urbNode.broadcastFromLocal(new Message(MessageType.PROPOSE, new ProposeContent(newBlock, parentChain), localId));
+        urbNode.broadcastFromLocal(new Message(MessageType.PROPOSE, new BlockWithChain(newBlock, parentChain), localId));
     }
 
     private void handleMessageDelivery(Message message) {
@@ -130,15 +130,15 @@ public class StreamletNode {
     }
 
     private void handlePropose(Message message) {
-        ProposeContent proposeContent = (ProposeContent) message.content();
-        SeenProposal proposal = new SeenProposal(message.sender(), proposeContent.block().epoch());
+        BlockWithChain blockWithChain = (BlockWithChain) message.content();
+        SeenProposal proposal = new SeenProposal(message.sender(), blockWithChain.block().epoch());
 
         if (seenProposals.contains(proposal)
-                || !blockchainManager.onPropose(proposeContent.block(), proposeContent.parentChain()))
+                || !blockchainManager.onPropose(blockWithChain))
             return;
         seenProposals.add(proposal);
 
-        Block fullBlock = proposeContent.block();
+        Block fullBlock = blockWithChain.block();
         Block blockHeader = new Block(fullBlock.parentHash(), fullBlock.epoch(), fullBlock.length(), new Transaction[0]);
         urbNode.broadcastFromLocal(new Message(MessageType.VOTE, blockHeader, localId));
     }
