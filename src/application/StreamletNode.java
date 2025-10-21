@@ -2,8 +2,10 @@ package application;
 
 import urb.URBNode;
 import utils.application.Block;
+import utils.application.BlockWithStatus;
 import utils.application.Message;
 import utils.application.MessageType;
+import utils.application.Proposal;
 import utils.application.Transaction;
 import utils.communication.PeerInfo;
 
@@ -115,17 +117,14 @@ public class StreamletNode {
     }
 
     private void proposeNewBlock(int epoch) throws NoSuchAlgorithmException {
-        Optional<Block> parentOpt = blockchainManager.getNotarizedTips().stream().findFirst();
+        SequencedSet<BlockWithStatus> parentChain = blockchainManager.longestNotarizedChains().getFirst();
 
-        if (parentOpt.isEmpty()) {
-            return;
-        }
-
-        Block parent = parentOpt.get();
+        Block parent = parentChain.getLast().block();
         Transaction[] transactions = transactionPoolSimulator.generateTransactions();
-
         Block newBlock = new Block(parent.getSHA1(), epoch, parent.length() + 1, transactions);
-        urbNode.broadcastFromLocal(new Message(MessageType.PROPOSE, newBlock, localId));
+
+        Proposal proposal = new Proposal(parentChain, newBlock);
+        urbNode.broadcastFromLocal(new Message(MessageType.PROPOSE, proposal, localId));
     }
 
     private void handleMessageDelivery(Message message) {
@@ -137,14 +136,16 @@ public class StreamletNode {
     }
 
     private void handlePropose(Message message) {
-        Block block = (Block) message.content();
-        SeenProposal proposal = new SeenProposal(message.sender(), block.epoch());
+        Proposal proposal = (Proposal) message.content();
+        Block block = proposal.proposedBlock();
 
-        if (seenProposals.contains(proposal) || !blockchainManager.extendNotarizedAnyChainTip(block))
+        SeenProposal seenProposal = new SeenProposal(message.sender(), block.epoch());
+        if (seenProposals.contains(seenProposal) || !blockchainManager.extendsFromLongestNotarizedChains(block))
             return;
+        seenProposals.add(seenProposal);
 
-        seenProposals.add(proposal);
-        blockchainManager.addPendingBlock(block);
+        SequencedSet<BlockWithStatus> parentChain = proposal.parentChain();
+        blockchainManager.addPendingBlock(block, parentChain);
 
         Block voteBlock = new Block(block.parentHash(), block.epoch(), block.length(), new Transaction[0]);
         urbNode.broadcastFromLocal(new Message(MessageType.VOTE, voteBlock, localId));
@@ -155,7 +156,7 @@ public class StreamletNode {
         Block block = (Block) message.content();
         votedBlocks.computeIfAbsent(block, _ -> new HashSet<>()).add(message.sender());
 
-        if (blockchainManager.extendNotarizedAnyChainTip(block)
+        if (blockchainManager.extendsFromLongestNotarizedChains(block)
                 && votedBlocks.get(block).size() > numberOfDistinctNodes / 2) {
             blockchainManager.notarizeBlock(block);
         }

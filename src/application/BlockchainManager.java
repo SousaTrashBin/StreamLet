@@ -1,9 +1,11 @@
 package application;
 
 import utils.application.Block;
+import utils.application.BlockWithStatus;
 import utils.application.Transaction;
 
 import java.util.*;
+import java.util.function.Function;
 
 public class BlockchainManager {
     private static final int SHA1_LENGTH = 20;
@@ -11,98 +13,123 @@ public class BlockchainManager {
     private static final Block GENESIS_BLOCK =
             new Block(new byte[SHA1_LENGTH], 0, 0, new Transaction[0]);
 
-    private final BlockNode notarizedBlockChain;
-    private final Map<Block, BlockNode> blockToNode = new HashMap<>();
-    private final Map<HashKey, BlockNode> hashToNode = new HashMap<>();
+    private final List<SequencedSet<BlockWithStatus>> chains = new LinkedList<>();
+    private final Map<Block, BlockWithStatus> blockToStatus = new HashMap<>();
+
+    private int longestNotarizedChainLength;
 
     public BlockchainManager() {
-        notarizedBlockChain = new BlockNode(GENESIS_BLOCK, null);
-        notarizedBlockChain.notarized = true;
-        blockToNode.put(GENESIS_BLOCK, notarizedBlockChain);
-        hashToNode.put(new HashKey(GENESIS_BLOCK.getSHA1()), notarizedBlockChain);
+        SequencedSet<BlockWithStatus> firstChain = new LinkedHashSet<>();
+        firstChain.add(new BlockWithStatus(GENESIS_BLOCK));
+        chains.add(firstChain);
+    }
+
+    public List<SequencedSet<BlockWithStatus>> longestNotarizedChains() {
+        return chains.stream()
+            .filter(chain -> chain.size() - 1 == longestNotarizedChainLength)
+            .toList();
+    }
+
+    public boolean extendsFromLongestNotarizedChains(Block block) {
+        return chains.stream()
+            .anyMatch(chain -> chain.size() - 1 == longestNotarizedChainLength && block.length() > chain.size() - 1);
+    }
+
+    public void addPendingBlock(Block block, SequencedSet<BlockWithStatus> parentChain) {
+        blockToStatus.put(block, new BlockWithStatus(block));
+
+        boolean chainsContainAParentBlock = false;
+        for (SequencedSet<BlockWithStatus> chain : chains)
+            for (BlockWithStatus b : chain) {
+                if (b.block().length() != 0 && parentChain.contains(b))
+                    chainsContainAParentBlock = true;
+            }
+
+        if (chainsContainAParentBlock) return;
+        
+        chains.add(parentChain);
+        int parentLength = parentChain.size() - 1;
+        if (parentLength > longestNotarizedChainLength)
+            longestNotarizedChainLength = parentLength;
     }
 
     public void notarizeBlock(Block block) {
-        BlockNode node = blockToNode.get(block);
-        if (node == null || node.notarized) {
+        BlockWithStatus blockWithStatus = blockToStatus.get(block);
+        if (blockWithStatus == null || blockWithStatus.isNotarized()) {
+            System.out.println("I SHOULDNT BE HERE " + blockWithStatus);
             return;
         }
-        BlockNode parent = hashToNode.get(new HashKey(block.parentHash()));
-        if (parent == null) {
+        blockWithStatus.notarize();
+        SequencedSet<BlockWithStatus> longestChain = addBlockToLongestNotarizedChain(blockWithStatus);
+        tryToFinalize(blockWithStatus, longestChain);
+    }
+
+    private SequencedSet<BlockWithStatus> addBlockToLongestNotarizedChain(BlockWithStatus block) {
+        SequencedSet<BlockWithStatus> longestNotarizedChain = chains.stream()
+            .max((chain1, chain2) -> chain1.size() - chain2.size()).get();
+        longestNotarizedChain.add(block);
+        longestNotarizedChainLength++;
+        return longestNotarizedChain;
+    }
+
+    private void tryToFinalize(BlockWithStatus b1, SequencedSet<BlockWithStatus> chain) {
+        chain.removeLast();
+        BlockWithStatus b2 = chain.removeLast();
+        if (chain.isEmpty()) {
+            chain.add(b2);
+            chain.add(b1);
             return;
         }
-        parent.addChild(node);
-        node.parent = parent;
-        node.notarized = true;
-        tryToFinalize(node);
-    }
+        BlockWithStatus b3 = chain.removeLast();
+        chain.add(b3);
+        chain.add(b2);
+        chain.add(b1);
 
-    public void addPendingBlock(Block block) {
-        BlockNode node = blockToNode.compute(block, (_, oldNode) -> {
-            if (oldNode == null) return new BlockNode(block, null);
-            oldNode.block = block;
-            return oldNode;
-        });
-
-        hashToNode.put(new HashKey(block.getSHA1()), node);
-    }
-
-    public boolean extendNotarizedAnyChainTip(Block proposedBlock) {
-        return getNotarizedTips().stream()
-                .anyMatch(tip -> proposedBlock.length() > tip.length() &&
-                        Arrays.equals(proposedBlock.parentHash(), tip.getSHA1()));
-    }
-
-    public List<Block> getNotarizedTips() {
-        return notarizedBlockChain.getNotarizedTips();
-    }
-
-    private void tryToFinalize(BlockNode b1) {
-        BlockNode b2 = b1.parent;
-        BlockNode b3 = (b2 != null) ? b2.parent : null;
-        if (b2 != null && b3 != null &&
-                b1.notarized && b2.notarized && b3.notarized &&
-                b1.block.epoch() == b2.block.epoch() + 1 &&
-                b2.block.epoch() == b3.block.epoch() + 1) {
-
-            finalizeChain(b2);
+        if (b1.isNotarized() && b2.isNotarized() && b3.isNotarized() &&
+            b1.block().epoch() == b2.block().epoch() + 1 &&
+            b2.block().epoch() == b3.block().epoch() + 1
+        ) {
+            finalizeChain(chain);
         }
     }
 
-    private void finalizeChain(BlockNode node) {
-        while (node != null && !node.finalized) {
-            node.finalized = true;
-            node = node.parent;
-        }
-    }
-
-    private BlockNode buildFullChain() {
-        Map<HashKey, BlockNode> newHashMap = new HashMap<>();
-        Map<Block, BlockNode> newIdentityMap = new HashMap<>();
-
-        List<BlockNode> blockToNodeValuesSnapshot = new ArrayList<>(blockToNode.values());
-        for (BlockNode oldNode : blockToNodeValuesSnapshot) {
-            BlockNode newNode = oldNode.copyWithoutParent();
-            newHashMap.put(new HashKey(oldNode.block.getSHA1()), newNode);
-
-            newIdentityMap.put(newNode.block, newNode);
-        }
-
-        List<BlockNode> identityMapValuesSnapshot = new ArrayList<>(newIdentityMap.values());
-        for (BlockNode node : identityMapValuesSnapshot) {
-            if (node.block == GENESIS_BLOCK) continue;
-            BlockNode parent = newHashMap.get(new HashKey(node.block.parentHash()));
-            if (parent == null) continue;
-            node.parent = parent;
-            parent.addChild(node);
-        }
-
-        return newIdentityMap.get(GENESIS_BLOCK);
+    private void finalizeChain(SequencedSet<BlockWithStatus> chain) {
+        BlockWithStatus temp = chain.removeLast();
+        chain.forEach(BlockWithStatus::finalize);
+        chain.add(temp);
     }
 
     public void printBlockchainTree() {
-        BlockNode root = buildFullChain();
-        root.printTree();
+        final String RESET = "\u001B[0m";
+        final String GREEN = "\u001B[32m";
+        final String YELLOW = "\u001B[33m";
+        Function<Integer, String> indent = depth -> " ".repeat(depth * 2);
+        Function<BlockWithStatus, String> color = block -> {
+            return block.isFinalized() ? GREEN : (block.isNotarized() ? YELLOW : RESET);
+        };
+
+        System.out.println("\n=== Blockchain Tree ===");
+        StringBuilder output = new StringBuilder();
+        chains.forEach(chain -> buildTreeString(chain, output, indent, color, RESET));
+        System.out.println(output);
+    }
+
+    private void buildTreeString(
+        SequencedSet<BlockWithStatus> chain,
+        StringBuilder output,
+        Function<Integer, String> indent,
+        Function<BlockWithStatus, String> color,
+        String RESET
+    ) {
+        int index = 0;
+        for (BlockWithStatus block : chain) {
+            if (block.equals(chain.getFirst()))
+                output.append(String.format("%sGENESIS%s%n", color.apply(block), RESET));
+            else
+                output.append(String.format("%s%sBlock[%d-%d]%s%n",
+                    indent.apply(index), color.apply(block), block.block().epoch(), block.block().length(), RESET));
+            index++;
+        }
     }
 
     record HashKey(byte[] bytes) {
