@@ -49,21 +49,24 @@ public class P2PNode implements Runnable, AutoCloseable {
         serverChannel.register(ioSelector, SelectionKey.OP_ACCEPT);
     }
 
-    public void waitForAllPeersConnected() throws InterruptedException {
-        allPeersConnectedLatch.await();
-    }
+    private void attemptConnectionToPeer(PeerInfo remotePeer) throws IOException {
+        peerConnections.computeIfPresent(remotePeer.id(), (_, existing) -> {
+            try {
+                if (existing.isConnected() || existing.isConnectionPending()) return existing;
+                if (existing.isOpen()) {
+                    existing.keyFor(ioSelector).cancel();
+                    existing.close();
+                }
+            } catch (IOException ignored) {
+            }
+            return null;
+        });
 
-    public void enqueueIncomingMessage(Message message) {
-        incomingMessageQueue.add(message);
-    }
-
-    public Message receiveMessage() throws InterruptedException {
-        return incomingMessageQueue.take();
-    }
-
-    public void enqueueOutgoingMessage(MessageWithReceiver messageWithReceiver) {
-        outgoingMessageQueue.add(messageWithReceiver);
-        ioSelector.wakeup();
+        SocketChannel clientChannel = SocketChannel.open();
+        clientChannel.configureBlocking(false);
+        clientChannel.connect(new InetSocketAddress(remotePeer.address().ip(), remotePeer.address().port()));
+        clientChannel.register(ioSelector, SelectionKey.OP_CONNECT, remotePeer);
+        peerConnections.put(remotePeer.id(), clientChannel);
     }
 
     @Override
@@ -97,11 +100,62 @@ public class P2PNode implements Runnable, AutoCloseable {
         }
     }
 
+    private void handleConnectionFailure(SelectionKey key, IOException e) {
+        if (!(key.channel() instanceof SocketChannel channel)) {
+            key.cancel();
+            try {
+                key.channel().close();
+            } catch (IOException ex) {
+                ex.printStackTrace();
+            }
+            return;
+        }
+
+        Integer peerId;
+
+        if (key.attachment() instanceof Integer) {
+            peerId = (Integer) key.attachment();
+        } else if (key.attachment() instanceof PeerInfo) {
+            peerId = ((PeerInfo) key.attachment()).id();
+        } else {
+            peerId = findPeerIdByChannel(channel);
+        }
+
+        if (peerId != null) {
+            peerConnections.remove(peerId, channel);
+            connectedPeers.remove(peerId);
+        }
+
+        try {
+            key.cancel();
+            channel.close();
+        } catch (IOException ex) {
+            ex.printStackTrace();
+        }
+    }
+
+    private Integer findPeerIdByChannel(SocketChannel channel) {
+        return peerConnections.entrySet().stream()
+                .filter(entry -> entry.getValue() == channel)
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .orElse(null);
+    }
+
     private void attemptToConnectToPeers() {
         long now = System.currentTimeMillis();
         for (PeerInfo remotePeer : peerInfoById.values()) {
             SocketChannel channel = peerConnections.get(remotePeer.id());
-            if (channel == null || !channel.isOpen() || (!channel.isConnected() && !channel.isConnectionPending())) {
+            if (channel == null || !channel.isOpen()) {
+                long lastAttempt = peerConnectionBackoff.getOrDefault(remotePeer.id(), 0L);
+                if (now - lastAttempt > RETRY_DELAY_MS) {
+                    try {
+                        peerConnectionBackoff.put(remotePeer.id(), now);
+                        attemptConnectionToPeer(remotePeer);
+                    } catch (IOException ignored) {
+                    }
+                }
+            } else if (!channel.isConnected() && !channel.isConnectionPending()) {
                 long lastAttempt = peerConnectionBackoff.getOrDefault(remotePeer.id(), 0L);
                 if (now - lastAttempt > RETRY_DELAY_MS) {
                     try {
@@ -114,58 +168,18 @@ public class P2PNode implements Runnable, AutoCloseable {
         }
     }
 
-    private void attemptConnectionToPeer(PeerInfo remotePeer) throws IOException {
-        peerConnections.computeIfPresent(remotePeer.id(), (_, existing) -> {
-            try {
-                if (existing.isConnected() || existing.isConnectionPending()) return existing;
-                if (existing.isOpen()) {
-                    existing.keyFor(ioSelector).cancel();
-                    existing.close();
-                }
-            } catch (IOException ignored) {
-            }
-            return null;
-        });
-
-        SocketChannel clientChannel = SocketChannel.open();
-        clientChannel.configureBlocking(false);
-        clientChannel.connect(new InetSocketAddress(remotePeer.address().ip(), remotePeer.address().port()));
-        clientChannel.register(ioSelector, SelectionKey.OP_CONNECT, remotePeer);
-        peerConnections.put(remotePeer.id(), clientChannel);
-    }
-
-    private void processOutgoingMessages() throws IOException {
-        MessageWithReceiver messageWithReceiver;
-        while ((messageWithReceiver = outgoingMessageQueue.poll()) != null) {
-            sendMessageToPeer(messageWithReceiver.receiverId(), messageWithReceiver.message());
-        }
-    }
-
-    private void sendMessageToPeer(Integer receiverId, Message message) throws IOException {
-        if (Objects.equals(receiverId, localPeerInfo.id())) {
-            return;
-        }
-        SocketChannel peerChannel = peerConnections.get(receiverId);
-        if (peerChannel == null || !peerChannel.isConnected()) {
-            return;
-        }
-
-        byte[] messageBytes = message.toBytes();
-        ByteBuffer sendBuffer = ByteBuffer.allocate(4 + messageBytes.length);
-        sendBuffer.putInt(messageBytes.length);
-        sendBuffer.put(messageBytes);
-        sendBuffer.flip();
-
-        while (sendBuffer.hasRemaining()) {
-            peerChannel.write(sendBuffer);
-        }
-    }
-
     private void handleConnectComplete(SelectionKey key) throws IOException {
         SocketChannel clientChannel = (SocketChannel) key.channel();
         PeerInfo remotePeer = (PeerInfo) key.attachment();
 
-        clientChannel.finishConnect();
+        try {
+            clientChannel.finishConnect();
+        } catch (IOException e) {
+            key.cancel();
+            clientChannel.close();
+            peerConnections.remove(remotePeer.id(), clientChannel);
+            throw e;
+        }
 
         if (localPeerInfo.id() > remotePeer.id()) { // tie break
             SocketChannel existing = peerConnections.get(remotePeer.id());
@@ -263,46 +277,48 @@ public class P2PNode implements Runnable, AutoCloseable {
         return Message.fromBytes(messageBuffer.array());
     }
 
-    private void handleConnectionFailure(SelectionKey key, IOException e) {
-        if (!(key.channel() instanceof SocketChannel channel)) {
-            key.cancel();
-            try {
-                key.channel().close();
-            } catch (IOException ex) {
-                ex.printStackTrace();
-            }
-            return;
-        }
+    public void enqueueOutgoingMessage(MessageWithReceiver messageWithReceiver) {
+        outgoingMessageQueue.add(messageWithReceiver);
+        ioSelector.wakeup();
+    }
 
-        Integer peerId;
+    public Message receiveMessage() throws InterruptedException {
+        return incomingMessageQueue.take();
+    }
 
-        if (key.attachment() instanceof Integer) {
-            peerId = (Integer) key.attachment();
-        } else if (key.attachment() instanceof PeerInfo) {
-            peerId = ((PeerInfo) key.attachment()).id();
-        } else {
-            peerId = findPeerIdByChannel(channel);
-        }
+    public void enqueueIncomingMessage(Message message) {
+        incomingMessageQueue.add(message);
+    }
 
-        if (peerId != null) {
-            peerConnections.remove(peerId, channel);
-            connectedPeers.remove(peerId);
-        }
+    public void waitForAllPeersConnected() throws InterruptedException {
+        allPeersConnectedLatch.await();
+    }
 
-        try {
-            key.cancel();
-            channel.close();
-        } catch (IOException ex) {
-            ex.printStackTrace();
+    private void processOutgoingMessages() throws IOException {
+        MessageWithReceiver messageWithReceiver;
+        while ((messageWithReceiver = outgoingMessageQueue.poll()) != null) {
+            sendMessageToPeer(messageWithReceiver.receiverId(), messageWithReceiver.message());
         }
     }
 
-    private Integer findPeerIdByChannel(SocketChannel channel) {
-        return peerConnections.entrySet().stream()
-                .filter(entry -> entry.getValue() == channel)
-                .map(Map.Entry::getKey)
-                .findFirst()
-                .orElse(null);
+    private void sendMessageToPeer(Integer receiverId, Message message) throws IOException {
+        if (Objects.equals(receiverId, localPeerInfo.id())) {
+            return;
+        }
+        SocketChannel peerChannel = peerConnections.get(receiverId);
+        if (peerChannel == null || !peerChannel.isConnected()) {
+            return;
+        }
+
+        byte[] messageBytes = message.toBytes();
+        ByteBuffer sendBuffer = ByteBuffer.allocate(4 + messageBytes.length);
+        sendBuffer.putInt(messageBytes.length);
+        sendBuffer.put(messageBytes);
+        sendBuffer.flip();
+
+        while (sendBuffer.hasRemaining()) {
+            peerChannel.write(sendBuffer);
+        }
     }
 
     @Override
