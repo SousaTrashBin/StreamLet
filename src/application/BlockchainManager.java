@@ -3,10 +3,7 @@ package application;
 import utils.application.Block;
 import utils.application.Transaction;
 
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class BlockchainManager {
     private static final int SHA1_LENGTH = 20;
@@ -26,11 +23,14 @@ public class BlockchainManager {
     }
 
     public void notarizeBlock(Block block) {
+        BlockNode node = blockToNode.get(block);
+        if (node == null || node.notarized) {
+            return;
+        }
         BlockNode parent = hashToNode.get(new HashKey(block.parentHash()));
         if (parent == null) {
             return;
         }
-        BlockNode node = blockToNode.get(block);
         parent.addChild(node);
         node.parent = parent;
         node.notarized = true;
@@ -80,21 +80,21 @@ public class BlockchainManager {
         Map<HashKey, BlockNode> newHashMap = new HashMap<>();
         Map<Block, BlockNode> newIdentityMap = new HashMap<>();
 
-        for (BlockNode oldNode : blockToNode.values()) {
+        List<BlockNode> blockToNodeValuesSnapshot = new ArrayList<>(blockToNode.values());
+        for (BlockNode oldNode : blockToNodeValuesSnapshot) {
             BlockNode newNode = oldNode.copyWithoutParent();
             newHashMap.put(new HashKey(oldNode.block.getSHA1()), newNode);
 
             newIdentityMap.put(newNode.block, newNode);
         }
 
-        for (BlockNode node : newIdentityMap.values()) {
+        List<BlockNode> identityMapValuesSnapshot = new ArrayList<>(newIdentityMap.values());
+        for (BlockNode node : identityMapValuesSnapshot) {
             if (node.block == GENESIS_BLOCK) continue;
-
             BlockNode parent = newHashMap.get(new HashKey(node.block.parentHash()));
-            if (parent != null) {
-                node.parent = parent;
-                parent.addChild(node);
-            }
+            if (parent == null) continue;
+            node.parent = parent;
+            parent.addChild(node);
         }
 
         return newIdentityMap.get(GENESIS_BLOCK);

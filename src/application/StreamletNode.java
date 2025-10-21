@@ -17,8 +17,9 @@ record SeenProposal(int leader, int epoch) {
 }
 
 public class StreamletNode {
-    private static final int CONFUSION_START = 20;
-    private static final int CONFUSION_DURATION = 12;
+    private static final int CONFUSION_START = 0;
+    private static final int CONFUSION_DURATION = 2;
+    public static final int BLOCK_CHAIN_PRINT_EPOCH_FREQUENCY = 5;
 
     private final int deltaInSeconds;
     private final int numberOfDistinctNodes;
@@ -51,7 +52,7 @@ public class StreamletNode {
         urbNode.waitForAllPeersToConnect();
 
         long epochDuration = 2L * deltaInSeconds;
-        scheduler.scheduleAtFixedRate(this::safeAdvanceEpoch, epochDuration, epochDuration, TimeUnit.SECONDS);
+        scheduler.scheduleAtFixedRate(this::safeAdvanceEpoch, 0, epochDuration, TimeUnit.SECONDS);
     }
 
     private void safeAdvanceEpoch() {
@@ -63,7 +64,7 @@ public class StreamletNode {
     }
 
     private void advanceEpoch() {
-        int epoch = currentEpoch.incrementAndGet();
+        int epoch = currentEpoch.get();
         int currentLeaderId = calculateLeaderId(epoch);
         System.out.printf("Epoch %d, leader %d%n", epoch, currentLeaderId);
 
@@ -74,8 +75,8 @@ public class StreamletNode {
                 e.printStackTrace();
             }
         }
-
-        if (epoch % 5 == 0) blockchainManager.printBlockchainTree();
+        if (epoch != 0 && epoch % BLOCK_CHAIN_PRINT_EPOCH_FREQUENCY == 0) blockchainManager.printBlockchainTree();
+        currentEpoch.incrementAndGet();
     }
 
     private void launchThreads() {
@@ -114,8 +115,7 @@ public class StreamletNode {
     }
 
     private void proposeNewBlock(int epoch) throws NoSuchAlgorithmException {
-        Optional<Block> parentOpt = blockchainManager.getNotarizedTips().stream()
-                .max(Comparator.comparingInt(Block::length).thenComparing(Block::epoch));
+        Optional<Block> parentOpt = blockchainManager.getNotarizedTips().stream().findFirst();
 
         if (parentOpt.isEmpty()) {
             return;
@@ -157,13 +157,12 @@ public class StreamletNode {
 
         if (blockchainManager.extendNotarizedAnyChainTip(block)
                 && votedBlocks.get(block).size() > numberOfDistinctNodes / 2) {
-
             blockchainManager.notarizeBlock(block);
         }
     }
 
     private boolean inConfusionEpoch(int epoch) {
-        return epoch >= CONFUSION_START && epoch < CONFUSION_START + CONFUSION_DURATION + 1;
+        return epoch >= CONFUSION_START && epoch <= CONFUSION_START + CONFUSION_DURATION - 1;
     }
 
     private int calculateLeaderId(int epoch) {
