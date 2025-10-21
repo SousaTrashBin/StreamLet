@@ -4,6 +4,7 @@ import utils.application.Block;
 import utils.application.Transaction;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 public class BlockchainManager {
     private static final int SHA1_LENGTH = 20;
@@ -11,109 +12,85 @@ public class BlockchainManager {
     private static final Block GENESIS_BLOCK =
             new Block(new byte[SHA1_LENGTH], 0, 0, new Transaction[0]);
 
-    private final BlockNode notarizedBlockChain;
-    private final Map<Block, BlockNode> blockToNode = new HashMap<>();
-    private final Map<HashKey, BlockNode> hashToNode = new HashMap<>();
+    private final Set<ChainView> seenNotarizedChains = new HashSet<>();
+    private final HashMap<Block, Block> headerToBlock = new HashMap<>();
+    private final Set<Block> hasNotarized = new HashSet<>();
+    private LinkedList<Block> biggestNotarizedChain = new LinkedList<>();
+    private LinkedList<Block> biggestFinalizedChain = new LinkedList<>();
 
     public BlockchainManager() {
-        notarizedBlockChain = new BlockNode(GENESIS_BLOCK, null);
-        notarizedBlockChain.notarized = true;
-        blockToNode.put(GENESIS_BLOCK, notarizedBlockChain);
-        hashToNode.put(new HashKey(GENESIS_BLOCK.getSHA1()), notarizedBlockChain);
+        biggestNotarizedChain.add(GENESIS_BLOCK);
+        seenNotarizedChains.add(new ChainView(biggestNotarizedChain));
     }
 
-    public void notarizeBlock(Block block) {
-        BlockNode node = blockToNode.get(block);
-        if (node == null || node.notarized) {
+    public void notarizeBlock(Block headerBlock) {
+        Block fullBlock = headerToBlock.get(headerBlock);
+        if (fullBlock == null
+                || hasNotarized.contains(fullBlock)
+                || fullBlock.length() <= biggestNotarizedChain.getLast().length()) {
             return;
         }
-        BlockNode parent = hashToNode.get(new HashKey(block.parentHash()));
-        if (parent == null) {
-            return;
-        }
-        parent.addChild(node);
-        node.parent = parent;
-        node.notarized = true;
-        tryToFinalize(node);
+        hasNotarized.add(fullBlock);
+        biggestNotarizedChain.add(fullBlock);
+        tryUpdateFinalizedChain();
     }
 
-    public void addPendingBlock(Block block) {
-        BlockNode node = blockToNode.compute(block, (_, oldNode) -> {
-            if (oldNode == null) return new BlockNode(block, null);
-            oldNode.block = block;
-            return oldNode;
-        });
+    private void tryUpdateFinalizedChain() {
+        int size = biggestNotarizedChain.size();
+        if (size < 3) return;
 
-        hashToNode.put(new HashKey(block.getSHA1()), node);
-    }
+        Block b0 = biggestNotarizedChain.get(size - 3);
+        Block b1 = biggestNotarizedChain.get(size - 2);
+        Block b2 = biggestNotarizedChain.get(size - 1);
 
-    public boolean extendNotarizedAnyChainTip(Block proposedBlock) {
-        return getNotarizedTips().stream()
-                .anyMatch(tip -> proposedBlock.length() > tip.length() &&
-                        Arrays.equals(proposedBlock.parentHash(), tip.getSHA1()));
-    }
-
-    public List<Block> getNotarizedTips() {
-        return notarizedBlockChain.getNotarizedTips();
-    }
-
-    private void tryToFinalize(BlockNode b1) {
-        BlockNode b2 = b1.parent;
-        BlockNode b3 = (b2 != null) ? b2.parent : null;
-        if (b2 != null && b3 != null &&
-                b1.notarized && b2.notarized && b3.notarized &&
-                b1.block.epoch() == b2.block.epoch() + 1 &&
-                b2.block.epoch() == b3.block.epoch() + 1) {
-
-            finalizeChain(b2);
+        if (b1.epoch() - b0.epoch() == 1 && b2.epoch() - b1.epoch() == 1) {
+            biggestFinalizedChain = new LinkedList<>(biggestNotarizedChain.subList(0, size - 1));
         }
     }
 
-    private void finalizeChain(BlockNode node) {
-        while (node != null && !node.finalized) {
-            node.finalized = true;
-            node = node.parent;
+    public boolean onPropose(Block proposedBlock, LinkedList<Block> parentChain) {
+        seenNotarizedChains.add(new ChainView(parentChain));
+        if (parentChain.size() > biggestNotarizedChain.size()) {
+            biggestNotarizedChain = parentChain;
         }
+        Block parentTip = parentChain.getLast();
+
+        if (!Arrays.equals(proposedBlock.parentHash(), parentTip.getSHA1())) return false;
+
+        boolean isStrictlyLonger = seenNotarizedChains.stream()
+                .allMatch(chain -> proposedBlock.length() > chain.blocks().getLast().length());
+        if (!isStrictlyLonger) {
+            return false;
+        }
+        headerToBlock.put(proposedBlock, proposedBlock);
+        return true;
     }
 
-    private BlockNode buildFullChain() {
-        Map<HashKey, BlockNode> newHashMap = new HashMap<>();
-        Map<Block, BlockNode> newIdentityMap = new HashMap<>();
+    public void printBiggestFinalizedChain() {
+        final String GREEN = "\u001B[32m";
+        final String RESET = "\u001B[0m";
 
-        List<BlockNode> blockToNodeValuesSnapshot = new ArrayList<>(blockToNode.values());
-        for (BlockNode oldNode : blockToNodeValuesSnapshot) {
-            BlockNode newNode = oldNode.copyWithoutParent();
-            newHashMap.put(new HashKey(oldNode.block.getSHA1()), newNode);
+        String header = "=== LONGEST FINALIZED CHAIN ===";
+        String border = "=".repeat(header.length());
 
-            newIdentityMap.put(newNode.block, newNode);
-        }
+        String chainString = biggestFinalizedChain.stream()
+                .map(block -> GREEN + "Block[%d-%d]".formatted(block.epoch(), block.length()) + RESET)
+                .collect(Collectors.joining(" <- "));
 
-        List<BlockNode> identityMapValuesSnapshot = new ArrayList<>(newIdentityMap.values());
-        for (BlockNode node : identityMapValuesSnapshot) {
-            if (node.block == GENESIS_BLOCK) continue;
-            BlockNode parent = newHashMap.get(new HashKey(node.block.parentHash()));
-            if (parent == null) continue;
-            node.parent = parent;
-            parent.addChild(node);
-        }
+        String output = String.format(
+                "%s%n%s%n%s%n%s%n%s",
+                border,
+                header,
+                border,
+                chainString,
+                border
+        );
 
-        return newIdentityMap.get(GENESIS_BLOCK);
+        System.out.println(output);
     }
 
-    public void printBlockchainTree() {
-        BlockNode root = buildFullChain();
-        root.printTree();
-    }
 
-    record HashKey(byte[] bytes) {
-        @Override
-        public int hashCode() {
-            return Arrays.hashCode(bytes);
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            return o instanceof HashKey(byte[] bytes1) && Arrays.equals(bytes, bytes1);
-        }
+    public LinkedList<Block> getBiggestNotarizedChain() {
+        return biggestNotarizedChain;
     }
 }
