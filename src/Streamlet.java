@@ -1,6 +1,7 @@
 import application.StreamletNode;
 import utils.ConfigParser;
 import utils.communication.PeerInfo;
+import utils.logs.Logger;
 
 
 void main(String[] args) throws IOException, InterruptedException {
@@ -12,6 +13,7 @@ void main(String[] args) throws IOException, InterruptedException {
     int nodeId = Integer.parseInt(args[0]);
 
     List<PeerInfo> peerInfos = ConfigParser.parsePeers();
+    Logger.CURRENT_LOG_LEVEL = ConfigParser.getLogLevel();
     PeerInfo localPeer = peerInfos.get(nodeId);
 
     List<PeerInfo> remotePeers = peerInfos.stream()
