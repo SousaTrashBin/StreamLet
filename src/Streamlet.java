@@ -20,6 +20,7 @@ void main(String[] args) throws IOException, InterruptedException {
             .filter(p -> p.id() != nodeId)
             .toList();
 
+    Logger.log("Waiting all peers to connect...");
     StreamletNode node = new StreamletNode(localPeer, remotePeers, 1);
     node.startProtocol();
 }

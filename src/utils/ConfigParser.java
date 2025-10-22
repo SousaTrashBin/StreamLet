@@ -24,7 +24,6 @@ public class ConfigParser {
                 index++;
             }
         }
-        IO.println(peersInfoList.toString());
         return peersInfoList;
     }
 

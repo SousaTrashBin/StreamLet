@@ -6,6 +6,7 @@ import utils.application.Message;
 import utils.application.MessageType;
 import utils.application.Transaction;
 import utils.communication.PeerInfo;
+import utils.logs.Logger;
 
 import java.io.IOException;
 import java.security.NoSuchAlgorithmException;
@@ -65,7 +66,8 @@ public class StreamletNode {
     private void advanceEpoch() {
         int epoch = currentEpoch.incrementAndGet();
         int currentLeaderId = calculateLeaderId(epoch);
-        System.out.printf("Epoch %d, leader %d%n", epoch, currentLeaderId);
+        Logger.log("");
+        Logger.log("#### EPOCH = " + epoch + " LEADER= " + currentLeaderId + " ####");
 
         if (localId == currentLeaderId) {
             try {
@@ -129,7 +131,8 @@ public class StreamletNode {
     }
 
     private void handleMessageDelivery(Message message) {
-        System.out.printf("Delivering Message %s%n", message);
+        //System.out.printf("Delivering Message %s%n", message);
+        Logger.logDeliveringMessage(message);
         switch (message.type()) {
             case PROPOSE -> handlePropose(message);
             case VOTE -> handleVote(message);

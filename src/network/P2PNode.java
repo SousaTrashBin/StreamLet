@@ -4,6 +4,7 @@ import utils.application.Message;
 import utils.communication.KeyType;
 import utils.communication.MessageWithReceiver;
 import utils.communication.PeerInfo;
+import utils.logs.Logger;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -206,7 +207,7 @@ public class P2PNode implements Runnable, AutoCloseable {
             allPeersConnectedLatch.countDown();
             peerConnectionBackoff.remove(remotePeer.id());
         }
-        System.out.println(localPeerInfo.id() + " connected to peer " + remotePeer.id());
+        Logger.debug(localPeerInfo.id() + " connected to peer " + remotePeer.id());
         clientChannel.register(ioSelector, SelectionKey.OP_READ | SelectionKey.OP_WRITE, remotePeer.id());
     }
 
@@ -243,7 +244,7 @@ public class P2PNode implements Runnable, AutoCloseable {
             allPeersConnectedLatch.countDown();
             peerConnectionBackoff.remove(remotePeerId);
         }
-        System.out.println(localPeerInfo.id() + " accepted connection from peer " + remotePeerId);
+        Logger.debug(localPeerInfo.id() + " accepted connection from peer " + remotePeerId);
         incomingChannel.register(ioSelector, SelectionKey.OP_READ | SelectionKey.OP_WRITE, remotePeerId);
     }
 
