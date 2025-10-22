@@ -33,18 +33,18 @@ make
 ## Running the System
 Inside the StreamLet/out/ folder, there is the main Streamlet class, which can be started with the following command:
 ```bash
-java Streamlet <id>
+java -cp out Streamlet <id>
 ```
 where **id** represents the node identifier. 
 The project currently supports exactly 5 nodes. 
 In order for the system to work properly, it is necessary to start five different instances, each with a distinct ID (for example, from 0 to 4):
 
 ```bash
-java Streamlet 0
-java Streamlet 1
-java Streamlet 2
-java Streamlet 3
-java Streamlet 4
+java -cp out Streamlet 0
+java -cp out Streamlet 1
+java -cp out Streamlet 2
+java -cp out Streamlet 3
+java -cp out Streamlet 4
 ```
 
 Another easy way to start the system is by running the provided shell script(Linux 24):
