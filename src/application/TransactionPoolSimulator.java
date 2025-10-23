@@ -8,7 +8,7 @@ public class TransactionPoolSimulator {
 
     private final int numberOfNodes;
     private final Random random = new Random(1L);
-    private int transactionId = 1;
+    private Long transactionId = 1L;
 
     public TransactionPoolSimulator(int numberOfNodes) {
         this.numberOfNodes = numberOfNodes;

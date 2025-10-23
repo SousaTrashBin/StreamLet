@@ -1,14 +1,20 @@
 package application;
 
 import urb.URBNode;
+import utils.ConfigParser;
 import utils.application.Block;
 import utils.application.Message;
 import utils.application.MessageType;
 import utils.application.Transaction;
+import utils.communication.Address;
 import utils.communication.PeerInfo;
 import utils.logs.Logger;
 
 import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import java.util.concurrent.*;
@@ -21,18 +27,21 @@ public class StreamletNode {
     private static final int CONFUSION_START = 20;
     private static final int CONFUSION_DURATION = 12;
 
+    private final int localId;
     private final int deltaInSeconds;
     private final int numberOfDistinctNodes;
-    private final TransactionPoolSimulator transactionPoolSimulator;
+    private final boolean isTransactionClientMode;
+
+    private final URBNode urbNode;
     private final Random random = new Random(1L);
+    private final BlockchainManager blockchainManager;
+    private final TransactionPoolSimulator transactionPoolSimulator;
     private final AtomicInteger currentEpoch = new AtomicInteger(0);
 
-    private final int localId;
-    private final URBNode urbNode;
-    private final BlockchainManager blockchainManager;
     private final Map<Block, Set<Integer>> votedBlocks = new HashMap<>();
     private final BlockingQueue<Message> derivableQueue = new LinkedBlockingQueue<>(1000);
     private final Set<SeenProposal> seenProposals = new HashSet<>();
+    private final ConcurrentLinkedQueue<Transaction> clientPendingTransactionsQueue = new ConcurrentLinkedQueue<>();
 
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
@@ -42,6 +51,7 @@ public class StreamletNode {
         localId = localPeerInfo.id();
         numberOfDistinctNodes = 1 + remotePeersInfo.size();
         this.deltaInSeconds = deltaInSeconds;
+        isTransactionClientMode = ConfigParser.isTransactionsClientMode();
         transactionPoolSimulator = new TransactionPoolSimulator(numberOfDistinctNodes);
         blockchainManager = new BlockchainManager();
         urbNode = new URBNode(localPeerInfo, remotePeersInfo, derivableQueue::add);
@@ -71,13 +81,16 @@ public class StreamletNode {
 
         if (localId == currentLeaderId) {
             try {
-                proposeNewBlock(epoch);
+                if (!isTransactionClientMode || !clientPendingTransactionsQueue.isEmpty()) {
+                    Logger.debug("New Block Proposition");
+                    proposeNewBlock(epoch);
+                }
             } catch (NoSuchAlgorithmException e) {
                 e.printStackTrace();
             }
         }
 
-        if (epoch % 5 == 0) blockchainManager.printBlockchainTree();
+        if (epoch % 5 == 0 || isTransactionClientMode) blockchainManager.printBlockchainTree();
     }
 
     private void launchThreads() {
@@ -88,8 +101,10 @@ public class StreamletNode {
                 Thread.currentThread().interrupt();
             }
         });
-
         executor.submit(this::consumeMessages);
+        if (isTransactionClientMode) {
+            executor.submit(this::receiveClientTransactionsRequests);
+        }
     }
 
     private void consumeMessages() {
@@ -124,14 +139,26 @@ public class StreamletNode {
         }
 
         Block parent = parentOpt.get();
-        Transaction[] transactions = transactionPoolSimulator.generateTransactions();
+        Transaction[] transactions;
+
+        if (isTransactionClientMode) {
+            transactions = new Transaction[clientPendingTransactionsQueue.size()];
+            int i = 0;
+            while (!clientPendingTransactionsQueue.isEmpty()) {
+                Transaction transaction = clientPendingTransactionsQueue.poll();
+                transactions[i] =transaction;
+                i++;
+            }
+        } else {
+            transactions = transactionPoolSimulator.generateTransactions();
+        }
 
         Block newBlock = new Block(parent.getSHA1(), epoch, parent.length() + 1, transactions);
+        Logger.debug("Proposed block created with transaction: " + Arrays.toString(transactions));
         urbNode.broadcastFromLocal(new Message(MessageType.PROPOSE, newBlock, localId));
     }
 
     private void handleMessageDelivery(Message message) {
-        //System.out.printf("Delivering Message %s%n", message);
         Logger.logDeliveringMessage(message);
         switch (message.type()) {
             case PROPOSE -> handlePropose(message);
@@ -173,5 +200,41 @@ public class StreamletNode {
         return inConfusionEpoch(epoch) ? epoch % numberOfDistinctNodes
                 : random.nextInt(numberOfDistinctNodes);
     }
+
+    private void receiveClientTransactionsRequests() {
+        Address myAddress = ConfigParser.parseServers().get(this.localId);
+
+        try(ServerSocket serverSocket = new ServerSocket(myAddress.port())) {
+            while(true) {
+                Socket clientSocket = serverSocket.accept();
+                Logger.debug("New client request: " + clientSocket.getInetAddress());
+                executor.submit(() -> handleReceiveClientRequest(clientSocket));
+            }
+        } catch (IOException e) {
+            System.err.println("Error opening P2P server " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private void handleReceiveClientRequest(Socket s) {
+        Logger.debug("Receiving transaction from client...");
+        try {
+            ObjectOutputStream oos = new ObjectOutputStream(s.getOutputStream());
+            oos.flush(); // Because of deadlock
+            ObjectInputStream ois = new ObjectInputStream(s.getInputStream());
+
+            Transaction transaction = (Transaction) ois.readObject();
+            Logger.log("SERVER: Received transaction: " + transaction);
+
+            clientPendingTransactionsQueue.add(transaction);
+            oos.close();
+            ois.close();
+            s.close();
+        } catch (IOException | ClassNotFoundException e) {
+            System.err.println("Error receiving client transaction " + e.getMessage());
+        }
+    }
+
+
 
 }

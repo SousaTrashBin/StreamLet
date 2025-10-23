@@ -19,6 +19,7 @@ void main(String[] args) throws IOException, InterruptedException {
     List<PeerInfo> remotePeers = peerInfos.stream()
             .filter(p -> p.id() != nodeId)
             .toList();
+    Logger.debug(remotePeers.toString());
 
     Logger.log("Waiting all peers to connect...");
     StreamletNode node = new StreamletNode(localPeer, remotePeers, 1);

@@ -8,7 +8,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class ConfigParser {
     public final static String CONFIG_FILE = "config.txt";
@@ -36,4 +38,41 @@ public class ConfigParser {
         }
         return LogLevel.NORMAL;
     }
+
+    public static Map<Integer, Address> parseServers() {
+        Map<Integer, Address>  serversInfoList = new HashMap<>();
+        List<String> lines = null;
+        try {
+            lines = Files.readAllLines(Paths.get(CONFIG_FILE));
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+        int index = 0;
+        for (String line: lines) {
+            if (line.startsWith("server")) {
+                String rawPeerInfo = line.split("=")[1].trim();
+                serversInfoList.put(index, Address.fromString(rawPeerInfo));
+                index++;
+            }
+        }
+        return serversInfoList;
+    }
+
+    public static boolean isTransactionsClientMode() {
+        List<String> lines = null;
+        try {
+            lines = Files.readAllLines(Paths.get(CONFIG_FILE));
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+        for (String line: lines) {
+            if (line.startsWith("transactionsMode=")) {
+                if (line.split("=")[1].trim().equalsIgnoreCase("CLIENT")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
 }

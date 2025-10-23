@@ -26,8 +26,8 @@ public record Block(byte[] parentHash, Integer epoch, Integer length, Transactio
             sha1.update(buffer.array());
 
             for (Transaction transaction : transactions) {
-                ByteBuffer transactionBuffer = ByteBuffer.allocate(20);
-                transactionBuffer.putInt(transaction.id());
+                ByteBuffer transactionBuffer = ByteBuffer.allocate(24);
+                transactionBuffer.putLong(transaction.id());
                 transactionBuffer.putDouble(transaction.amount());
                 transactionBuffer.putInt(transaction.sender());
                 transactionBuffer.putInt(transaction.receiver());

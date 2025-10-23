@@ -32,8 +32,9 @@ public class Logger {
 
                 IO.println("[" + message.type() + "] From Peer " + message.sender() +
                             " Block[ Epoch: " + currentBlock.epoch()                +
-                            ", Length: " + currentBlock.length()                     +
-                            ", PartialParentHash:" + partialParentHash       + " ]");
+                            ", Length: " + currentBlock.length()                    +
+                            ", PartialParentHash:" + partialParentHash       + " ]" +
+                            ", " + Arrays.toString(currentBlock.transactions()));
             }
         }
     }
