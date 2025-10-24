@@ -4,6 +4,8 @@ import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 public record Block(byte[] parentHash, Integer epoch, Integer length, Transaction[] transactions) implements Content {
 
@@ -53,5 +55,20 @@ public record Block(byte[] parentHash, Integer epoch, Integer length, Transactio
         result = 31 * result + epoch.hashCode();
         result = 31 * result + length.hashCode();
         return result;
+    }
+
+    public String toStringSummary() {
+        String partialParentHash = IntStream.range(0, Math.min(4, parentHash.length))
+                .mapToObj(i -> String.format("%02X", parentHash[i]))
+                .collect(Collectors.joining(" "));
+
+        String txSummary = Arrays.stream(transactions)
+                .map(Transaction::toStringSummary)
+                .collect(Collectors.joining("; "));
+
+        return String.format(
+                "Epoch: %d | Length: %d | Parent: %s | Tx: [%s]",
+                epoch, length, partialParentHash, txSummary
+        );
     }
 }
