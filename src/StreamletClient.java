@@ -1,135 +1,153 @@
 import utils.ConfigParser;
 import utils.application.Transaction;
 import utils.communication.Address;
-import utils.logs.Logger;
+import utils.logs.AppLogger;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.ObjectOutputStream;
-import java.net.Socket;
-import java.util.Map;
-import java.util.Random;
-import java.util.UUID;
+private final Random random = new Random(1L);
+private boolean running = true;
+private Socket socket;
+private BufferedReader userInput;
+private ObjectOutputStream out;
+private Map<Integer, Address> serverAddressees;
 
-public class StreamletClient {
+void main() throws IOException {
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+        try {
+            System.in.close();
+        } catch (IOException ignored) {
+        }
+        closeResources();
+    }));
 
-    private boolean running = true;
-    private Socket socket;
-    private BufferedReader userInput;
-    private ObjectOutputStream out;
+    userInput = new BufferedReader(new InputStreamReader(System.in));
+    serverAddressees = ConfigParser.parseConfig().servers;
+    printInfoGui();
 
-    private Map<Integer, Address> serverAddressees;
-    private final Random random = new Random(1L);
-
-    public void main(String[] args) {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            try { System.in.close(); } catch (IOException ignored) {}
-            closeResources();
-        }));
-
-        userInput = new BufferedReader(new InputStreamReader(System.in));
-        serverAddressees = ConfigParser.parseServers();
-        printInfoGui();
-        while (running) {
-            connectToRandomStreamlet();
-            printClientGui();
-            Transaction clientTransaction = handleClientInput(userInput);
-            if (clientTransaction != null) {
-                sendTransaction(clientTransaction);
-                IO.println("Transaction Sent!");
-            }
+    while (running) {
+        if (socket == null || socket.isClosed()) {
             try {
-                Thread.sleep(500);
-                socket.close();
-                out.close();
+                connectToRandomStreamlet();
             } catch (IOException e) {
-                throw new RuntimeException(e);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
+                AppLogger.logError("Failed to connect to a server. Retrying in 2s...", e);
+                sleepMillis(2000);
+                continue;
             }
         }
-    }
 
-    private void connectToRandomStreamlet() {
-        int randomInt = random.nextInt(serverAddressees.size());
-        int port = serverAddressees.get(randomInt).port();
-        String ip = serverAddressees.get(randomInt).ip();
-        try {
-            socket = new Socket(ip, port);
-            out = new ObjectOutputStream(socket.getOutputStream());
-            out.flush();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+        printClientGui();
+        Transaction clientTransaction = handleClientInput(userInput);
+        if (clientTransaction != null) {
+            sendTransaction(clientTransaction);
         }
     }
 
+    closeResources();
+}
 
-    private Transaction handleClientInput(BufferedReader userInput ) {
-        try {
-            String input = userInput.readLine();
-            if (input.equals("quit")) {
-                running = false;
-                System.out.println("Closing client...");
-                return null;
-            }
-            Double amount = Double.parseDouble(input.split(" ")[0]);
-            int sender = Integer.parseInt(input.split(" ")[1]);
-            int receiver = Integer.parseInt(input.split(" ")[2]);
-            UUID uuid = UUID.randomUUID();
-            long id = uuid.getMostSignificantBits() ^ uuid.getLeastSignificantBits();
-            return new Transaction(id, amount, sender, receiver);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        return null;
-    }
+private void connectToRandomStreamlet() throws IOException {
+    int randomInt = random.nextInt(serverAddressees.size());
+    Address address = serverAddressees.get(randomInt);
 
-    private void sendTransaction(Transaction transaction) {
-        try {
-            IO.println("Sending Transaction...");
-            out.writeObject(transaction);
-            out.flush();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-    }
+    socket = new Socket(address.ip(), address.port());
+    out = new ObjectOutputStream(socket.getOutputStream());
+    out.flush();
+    AppLogger.logInfo("Connected to server " + address.ip() + ":" + address.port());
+}
 
-    private void printClientGui() {
-        System.out.print("Enter a transaction: ");
-    }
-
-    private void printInfoGui() {
-        System.out.println("Type transaction as <amount> <sender> <receiver> ");
-        System.out.println("To exit type: quit");
-        System.out.println("Example: 23.45 2 3");
-    }
-
-    private void closeResources() {
-        try {
-            if (socket != null && !socket.isClosed()) {
-                socket.close();
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
+private Transaction handleClientInput(BufferedReader userInput) {
+    try {
+        String input = userInput.readLine();
+        if (input == null || input.equalsIgnoreCase("quit")) {
+            running = false;
+            AppLogger.logInfo("Closing client...");
+            return null;
         }
 
-        try {
-            if (userInput != null) {
-                userInput.close();
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
+        String[] parts = input.trim().split(" ");
+        if (parts.length != 3) {
+            AppLogger.logWarning("Invalid input format. Expected: <amount> <sender> <receiver>");
+            return null;
         }
 
-        try {
-            if (out != null) {
-                out.close();
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+        double amount = Double.parseDouble(parts[0]);
+        int sender = Integer.parseInt(parts[1]);
+        int receiver = Integer.parseInt(parts[2]);
+        long id = UUID.randomUUID().getLeastSignificantBits();
+
+        return new Transaction(id, amount, sender, receiver);
+    } catch (IOException e) {
+        AppLogger.logError("Error reading input from user.", e);
+    } catch (NumberFormatException e) {
+        AppLogger.logError("Failed to parse transaction numbers. Please enter valid numbers.", e);
+    }
+    return null;
+}
+
+private void sendTransaction(Transaction transaction) {
+    if (socket == null || socket.isClosed() || out == null) {
+        AppLogger.logWarning("No connection to server. Transaction not sent.");
+        return;
     }
 
+    try {
+        out.writeObject(transaction);
+        out.flush();
+        AppLogger.logInfo("Transaction sent: " + transaction);
+    } catch (IOException e) {
+        AppLogger.logError("Failed to send transaction. Will attempt reconnect.", e);
+        closeSocketAndStream();
+    }
+}
 
+private void printClientGui() {
+    AppLogger.logInfo("Enter a transaction: ");
+}
+
+private void printInfoGui() {
+    AppLogger.logInfo("Type transaction as <amount> <sender> <receiver>");
+    AppLogger.logInfo("To exit type: quit");
+    AppLogger.logInfo("Example: 23.45 2 3");
+}
+
+private void closeResources() {
+    closeSocketAndStream();
+    try {
+        if (userInput != null) {
+            userInput.close();
+            AppLogger.logDebug("User input stream closed.");
+        }
+    } catch (IOException e) {
+        AppLogger.logError("Failed to close user input stream.", e);
+    }
+}
+
+private void closeSocketAndStream() {
+    try {
+        if (socket != null && !socket.isClosed()) {
+            socket.close();
+            AppLogger.logDebug("Socket closed.");
+        }
+    } catch (IOException e) {
+        AppLogger.logError("Failed to close socket.", e);
+    }
+
+    try {
+        if (out != null) {
+            out.close();
+            AppLogger.logDebug("Output stream closed.");
+        }
+    } catch (IOException e) {
+        AppLogger.logError("Failed to close output stream.", e);
+    }
+
+    socket = null;
+    out = null;
+}
+
+private void sleepMillis(long ms) {
+    try {
+        Thread.sleep(ms);
+    } catch (InterruptedException ignored) {
+        Thread.currentThread().interrupt();
+    }
 }

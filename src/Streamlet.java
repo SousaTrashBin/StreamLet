@@ -1,7 +1,7 @@
 import application.StreamletNode;
 import utils.ConfigParser;
 import utils.communication.PeerInfo;
-import utils.logs.Logger;
+import utils.logs.AppLogger;
 
 
 void main(String[] args) throws IOException, InterruptedException {
@@ -12,16 +12,16 @@ void main(String[] args) throws IOException, InterruptedException {
 
     int nodeId = Integer.parseInt(args[0]);
 
-    List<PeerInfo> peerInfos = ConfigParser.parsePeers();
-    Logger.CURRENT_LOG_LEVEL = ConfigParser.getLogLevel();
+    ConfigParser.ConfigData configData = ConfigParser.parseConfig();
+
+    List<PeerInfo> peerInfos = configData.peers;
+    AppLogger.updateLoggerLevel(configData.logLevel);
     PeerInfo localPeer = peerInfos.get(nodeId);
 
-    List<PeerInfo> remotePeers = peerInfos.stream()
-            .filter(p -> p.id() != nodeId)
-            .toList();
-    Logger.debug(remotePeers.toString());
+    List<PeerInfo> remotePeers = peerInfos.stream().filter(p -> p.id() != nodeId).toList();
+    AppLogger.logDebug(remotePeers.toString());
 
-    Logger.log("Waiting all peers to connect...");
-    StreamletNode node = new StreamletNode(localPeer, remotePeers, 1);
+    AppLogger.logInfo("Waiting all peers to connect...");
+    StreamletNode node = new StreamletNode(localPeer, remotePeers, 1, configData.isClientGeneratingTransactions, configData.servers.get(nodeId));
     node.startProtocol();
 }
