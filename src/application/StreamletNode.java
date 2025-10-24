@@ -1,10 +1,8 @@
 package application;
 
 import urb.URBNode;
-import utils.application.Block;
-import utils.application.Message;
-import utils.application.MessageType;
-import utils.application.Transaction;
+import utils.application.*;
+import utils.communication.Address;
 import utils.communication.PeerInfo;
 import utils.logs.AppLogger;
 
@@ -39,19 +37,22 @@ public class StreamletNode {
     private final Set<SeenProposal> seenProposals = new HashSet<>();
     private final ConcurrentLinkedQueue<Transaction> clientPendingTransactionsQueue = new ConcurrentLinkedQueue<>();
 
+
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private final boolean isClientGeneratingTransactions;
     private final Address myClientAddress;
 
-    public StreamletNode(PeerInfo localPeerInfo, List<PeerInfo> remotePeersInfo, int deltaInSeconds, boolean isTransactionClientMode, Address myClientAddress)
+    public StreamletNode(PeerInfo localPeerInfo, List<PeerInfo> remotePeersInfo, int deltaInSeconds,
+                         boolean isClientGeneratingTransactions, Address myClientAddress)
             throws IOException {
         localId = localPeerInfo.id();
         numberOfDistinctNodes = 1 + remotePeersInfo.size();
         this.deltaInSeconds = deltaInSeconds;
-        this.isTransactionClientMode = isTransactionClientMode;
         transactionPoolSimulator = new TransactionPoolSimulator(numberOfDistinctNodes);
         blockchainManager = new BlockchainManager();
         urbNode = new URBNode(localPeerInfo, remotePeersInfo, derivableQueue::add);
+        this.isClientGeneratingTransactions = isClientGeneratingTransactions;
         this.myClientAddress = myClientAddress;
     }
 
@@ -78,10 +79,11 @@ public class StreamletNode {
 
         if (localId == currentLeaderId) {
             try {
-                if (!isTransactionClientMode || !clientPendingTransactionsQueue.isEmpty()) {
+                if (!isClientGeneratingTransactions || !clientPendingTransactionsQueue.isEmpty()) {
                     AppLogger.logDebug("Node " + localId + " is leader: proposing new block");
                     proposeNewBlock(epoch);
                 }
+                proposeNewBlock(epoch);
             } catch (NoSuchAlgorithmException e) {
                 AppLogger.logError("Error proposing new block: " + e.getMessage(), e);
             }
@@ -97,12 +99,11 @@ public class StreamletNode {
                 urbNode.startURBNode();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                AppLogger.logWarning("URBNode thread interrupted");
             }
         });
 
         executor.submit(this::consumeMessages);
-        if (isTransactionClientMode) executor.submit(this::receiveClientTransactionsRequests);
+        if (isClientGeneratingTransactions) executor.submit(this::receiveClientTransactionsRequests);
     }
 
     private void consumeMessages() {
@@ -125,6 +126,7 @@ public class StreamletNode {
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            AppLogger.logWarning("Message consumer thread interrupted");
         }
     }
 
@@ -132,8 +134,7 @@ public class StreamletNode {
         LinkedList<Block> parentChain = blockchainManager.getBiggestNotarizedChain();
         Block parent = parentChain.getLast();
         Transaction[] transactions;
-
-        if (isTransactionClientMode) {
+        if (isClientGeneratingTransactions) {
             transactions = new Transaction[clientPendingTransactionsQueue.size()];
             int i = 0;
             while (!clientPendingTransactionsQueue.isEmpty()) {
@@ -145,7 +146,7 @@ public class StreamletNode {
 
         Block newBlock = new Block(parent.getSHA1(), epoch, parent.length() + 1, transactions);
         AppLogger.logDebug("Proposed block: " + newBlock + " with transactions: " + Arrays.toString(transactions));
-        urbNode.broadcastFromLocal(new Message(MessageType.PROPOSE, newBlock, localId));
+        urbNode.broadcastFromLocal(new Message(MessageType.PROPOSE, new BlockWithChain(newBlock, parentChain), localId));
     }
 
     private void handleMessageDelivery(Message message) {
@@ -157,18 +158,18 @@ public class StreamletNode {
     }
 
     private void handlePropose(Message message) {
-        Block block = (Block) message.content();
-        SeenProposal proposal = new SeenProposal(message.sender(), block.epoch());
+        BlockWithChain blockWithChain = (BlockWithChain) message.content();
+        SeenProposal proposal = new SeenProposal(message.sender(), blockWithChain.block().epoch());
 
-        if (seenProposals.contains(proposal) || !blockchainManager.extendNotarizedAnyChainTip(block))
+        if (seenProposals.contains(proposal)
+                || !blockchainManager.onPropose(blockWithChain))
             return;
-
         seenProposals.add(proposal);
-        blockchainManager.addPendingBlock(block);
 
-        Block voteBlock = new Block(block.parentHash(), block.epoch(), block.length(), new Transaction[0]);
-        urbNode.broadcastFromLocal(new Message(MessageType.VOTE, voteBlock, localId));
-        AppLogger.logDebug("Voted for block from leader " + message.sender() + " epoch " + block.epoch());
+        Block fullBlock = blockWithChain.block();
+        Block blockHeader = new Block(fullBlock.parentHash(), fullBlock.epoch(), fullBlock.length(), new Transaction[0]);
+        urbNode.broadcastFromLocal(new Message(MessageType.VOTE, blockHeader, localId));
+        AppLogger.logDebug("Voted for block from leader " + message.sender() + " epoch " + fullBlock.epoch());
     }
 
 
@@ -176,19 +177,19 @@ public class StreamletNode {
         Block block = (Block) message.content();
         votedBlocks.computeIfAbsent(block, _ -> new HashSet<>()).add(message.sender());
 
-        if (blockchainManager.extendNotarizedAnyChainTip(block)
-                && votedBlocks.get(block).size() > numberOfDistinctNodes / 2) {
+        if (votedBlocks.get(block).size() > numberOfDistinctNodes / 2) {
             blockchainManager.notarizeBlock(block);
-            AppLogger.logInfo("Block notarized: epoch " + block.epoch() + " length " + block.length());
         }
     }
 
     private boolean inConfusionEpoch(int epoch) {
-        return epoch >= CONFUSION_START && epoch < CONFUSION_START + CONFUSION_DURATION + 1;
+        return epoch >= CONFUSION_START && epoch <= CONFUSION_START + CONFUSION_DURATION - 1;
     }
 
+
     private int calculateLeaderId(int epoch) {
-        return inConfusionEpoch(epoch) ? epoch % numberOfDistinctNodes : random.nextInt(numberOfDistinctNodes);
+        return inConfusionEpoch(epoch) ? epoch % numberOfDistinctNodes
+                : random.nextInt(numberOfDistinctNodes);
     }
 
     private void receiveClientTransactionsRequests() {
@@ -222,5 +223,4 @@ public class StreamletNode {
             AppLogger.logInfo("Client " + clientSocket.getInetAddress() + " disconnected.");
         }
     }
-
 }

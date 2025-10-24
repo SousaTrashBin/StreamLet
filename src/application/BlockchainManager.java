@@ -3,6 +3,7 @@ package application;
 import utils.application.Block;
 import utils.application.BlockWithChain;
 import utils.application.Transaction;
+import utils.logs.AppLogger;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -38,6 +39,7 @@ public class BlockchainManager {
         if (chain.getLast().length() > biggestNotarizedChain.getLast().length()) {
             biggestNotarizedChain = chain;
         }
+        AppLogger.logInfo("Block notarized: epoch " + headerBlock.epoch() + " length " + headerBlock.length());
         tryToFinalizeChain(chain);
     }
 
@@ -49,7 +51,6 @@ public class BlockchainManager {
                 .stream()
                 .map(Block::epoch)
                 .gather(Gatherers.windowSliding(2)) // zip xs $ tail xs
-                .peek(System.out::println)
                 .map(window -> window.getLast() - window.getFirst())
                 .allMatch(delta -> delta == 1);
         if (shouldChainBeFinalized) {
@@ -99,9 +100,13 @@ public class BlockchainManager {
                 border
         );
 
-        System.out.println(output);
-    }
+        synchronized (AppLogger.class) {
+            for (String line : output.split("\n")) {
+                AppLogger.logInfo(line);
+            }
+        }
 
+    }
 
     public LinkedList<Block> getBiggestNotarizedChain() {
         return biggestNotarizedChain;
