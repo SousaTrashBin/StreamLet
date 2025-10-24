@@ -5,6 +5,7 @@ import utils.application.Message;
 import utils.application.MessageType;
 import utils.communication.MessageWithReceiver;
 import utils.communication.PeerInfo;
+import utils.logs.AppLogger;
 
 import java.io.IOException;
 import java.util.HashSet;
@@ -38,7 +39,7 @@ public class URBNode {
 
     public void startURBNode() throws InterruptedException {
         waitForAllPeersToConnect();
-        System.out.printf("P2PNode %d is ready\n", localPeerId);
+        AppLogger.logInfo("P2PNode " + localPeerId + " is ready");
         executor.submit(this::processIncomingMessages);
     }
 
