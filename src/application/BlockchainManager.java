@@ -13,6 +13,7 @@ public class BlockchainManager {
 
     private static final Block GENESIS_BLOCK =
             new Block(new byte[SHA1_LENGTH], 0, 0, new Transaction[0]);
+    public static final int FINALIZATION_MIN_SIZE = 3;
 
     private final Set<ChainView> seenNotarizedChains = new HashSet<>();
     private LinkedList<Block> biggestNotarizedChain = new LinkedList<>();
@@ -42,11 +43,12 @@ public class BlockchainManager {
 
     private void tryToFinalizeChain(LinkedList<Block> chain) {
         int size = chain.size();
-        if (size < 3) return;
+        if (size < FINALIZATION_MIN_SIZE) return;
         boolean shouldChainBeFinalized = chain
-                .subList(chain.size() - 3, chain.size())
-                .stream().map(Block::epoch)
-                .gather(Gatherers.windowSliding(2))
+                .subList(chain.size() - FINALIZATION_MIN_SIZE, chain.size())
+                .stream()
+                .map(Block::epoch)
+                .gather(Gatherers.windowSliding(2)) // zip xs $ tail xs
                 .peek(System.out::println)
                 .map(window -> window.getLast() - window.getFirst())
                 .allMatch(delta -> delta == 1);
