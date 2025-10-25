@@ -19,10 +19,9 @@ record SeenProposal(int leader, int epoch) {
 }
 
 public class StreamletNode {
+    public static final int BLOCK_CHAIN_PRINT_EPOCH_FREQUENCY = 5;
     private static final int CONFUSION_START = 0;
     private static final int CONFUSION_DURATION = 2;
-    public static final int BLOCK_CHAIN_PRINT_EPOCH_FREQUENCY = 5;
-
     private final int deltaInSeconds;
     private final int numberOfDistinctNodes;
     private final TransactionPoolSimulator transactionPoolSimulator;

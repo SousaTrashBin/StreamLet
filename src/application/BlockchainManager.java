@@ -10,17 +10,14 @@ import java.util.stream.Collectors;
 import java.util.stream.Gatherers;
 
 public class BlockchainManager {
+    public static final int FINALIZATION_MIN_SIZE = 3;
     private static final int SHA1_LENGTH = 20;
-
     private static final Block GENESIS_BLOCK =
             new Block(new byte[SHA1_LENGTH], 0, 0, new Transaction[0]);
-    public static final int FINALIZATION_MIN_SIZE = 3;
-
     private final Set<ChainView> seenNotarizedChains = new HashSet<>();
-    private LinkedList<Block> biggestNotarizedChain = new LinkedList<>();
     private final Set<ChainView> finalizedChains = new HashSet<>();
-
     private final HashMap<Block, BlockWithChain> pendingProposes = new HashMap<>();
+    private LinkedList<Block> biggestNotarizedChain = new LinkedList<>();
 
     public BlockchainManager() {
         biggestNotarizedChain.add(GENESIS_BLOCK);
